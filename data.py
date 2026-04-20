@@ -25,9 +25,29 @@ def _clean_texts(texts: list[str]) -> list[str]:
     return cleaned
 
 
-def load_wikitext2(max_vocab_size: int = 20000, min_freq: int = 2) -> EncodedDataset:
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1")
+# def load_wikitext2(max_vocab_size: int = 20000, min_freq: int = 2) -> EncodedDataset:
+#     # ds = load_dataset("wikitext", "wikitext-2-raw-v1")
+#     ds= load_dataset("wikitext", "wikitext-103-raw-v1")
+#     train_texts = _clean_texts(ds["train"]["text"])
+#     valid_texts = _clean_texts(ds["validation"]["text"])
+#     test_texts = _clean_texts(ds["test"]["text"])
+#     tokenizer = build_tokenizer(train_texts, max_vocab_size=max_vocab_size, min_freq=min_freq)
 
+#     def encode_split(texts: list[str]) -> torch.Tensor:
+#         ids: list[int] = []
+#         for text in texts:
+#             ids.extend(tokenizer.encode(text, add_bos=True, add_eos=True))
+#         return torch.tensor(ids, dtype=torch.long)
+
+#     return EncodedDataset(
+#         train_ids=encode_split(train_texts),
+#         valid_ids=encode_split(valid_texts),
+#         test_ids=encode_split(test_texts),
+#         tokenizer=tokenizer,
+#     )
+
+def load_wikitext2(max_vocab_size: int = 20000, min_freq: int = 2) -> EncodedDataset:
+    ds = load_dataset("wikitext", "wikitext-103-raw-v1")
     train_texts = _clean_texts(ds["train"]["text"])
     valid_texts = _clean_texts(ds["validation"]["text"])
     test_texts = _clean_texts(ds["test"]["text"])
@@ -37,7 +57,8 @@ def load_wikitext2(max_vocab_size: int = 20000, min_freq: int = 2) -> EncodedDat
         ids: list[int] = []
         for text in texts:
             ids.extend(tokenizer.encode(text, add_bos=True, add_eos=True))
-        return torch.tensor(ids, dtype=torch.long)
+        t = torch.tensor(ids, dtype=torch.long)
+        return t.pin_memory() if torch.cuda.is_available() else t
 
     return EncodedDataset(
         train_ids=encode_split(train_texts),
@@ -45,7 +66,6 @@ def load_wikitext2(max_vocab_size: int = 20000, min_freq: int = 2) -> EncodedDat
         test_ids=encode_split(test_texts),
         tokenizer=tokenizer,
     )
-
 
 def get_batch(data: torch.Tensor, batch_size: int, seq_len: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
     max_start = len(data) - seq_len - 1

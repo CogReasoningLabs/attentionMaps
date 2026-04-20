@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--prompt", type=str, required=True)
     parser.add_argument("--max-new-tokens", type=int, default=30)
-    parser.add_argument("--temperature", type=float, default=0.3)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--do-sample", action="store_true")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")

@@ -2,9 +2,82 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from attention_variants import ATTENTION_REGISTRY
 from config import ModelConfig
+
+
+class Expert(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, dropout: float):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class MoE(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.num_experts = cfg.num_experts
+        self.top_k = cfg.top_k
+        self.d_model = cfg.d_model
+        moe_hidden = cfg.moe_hidden_dim or cfg.d_ff
+        
+        # Create experts
+        self.experts = nn.ModuleList([
+            Expert(cfg.d_model, moe_hidden, cfg.dropout) 
+            for _ in range(self.num_experts)
+        ])
+        
+        # Gating network
+        self.gate = nn.Linear(cfg.d_model, self.num_experts)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (batch_size, seq_len, d_model)
+        batch_size, seq_len, d_model = x.shape
+        assert d_model == self.d_model
+        
+        # Flatten batch and seq dimensions for gating
+        x_flat = x.view(-1, d_model)  # (batch_size * seq_len, d_model)
+        
+        # Get gating logits
+        gate_logits = self.gate(x_flat)  # (batch_size * seq_len, num_experts)
+        
+        # Get top-k experts
+        top_k_logits, top_k_indices = torch.topk(gate_logits, self.top_k, dim=-1)
+        
+        # Compute gating weights
+        gating_weights = F.softmax(top_k_logits, dim=-1)  # (batch_size * seq_len, top_k)
+        
+        # Initialize output
+        output = torch.zeros_like(x_flat)
+        
+        # For each expert in top-k, compute contribution
+        for i in range(self.top_k):
+            expert_idx = top_k_indices[:, i]  # (batch_size * seq_len,)
+            expert_weight = gating_weights[:, i]  # (batch_size * seq_len,)
+            
+            # Get expert outputs for all tokens
+            expert_outputs = torch.stack([self.experts[j](x_flat) for j in range(self.num_experts)], dim=1)
+            # expert_outputs: (batch_size * seq_len, num_experts, d_model)
+            
+            # Select the appropriate expert output for each token
+            selected_expert_output = expert_outputs[torch.arange(batch_size * seq_len), expert_idx]  # (batch_size * seq_len, d_model)
+            
+            # Add weighted contribution
+            output += expert_weight.unsqueeze(-1) * selected_expert_output
+        
+        # Reshape back to original shape
+        output = output.view(batch_size, seq_len, d_model)
+        return output
 
 
 class TransformerBlock(nn.Module):
@@ -14,13 +87,17 @@ class TransformerBlock(nn.Module):
         self.ln1 = nn.LayerNorm(cfg.d_model)
         self.attn = attn_cls(cfg.d_model, cfg.n_heads, cfg.dropout)
         self.ln2 = nn.LayerNorm(cfg.d_model)
-        self.ff = nn.Sequential(
-            nn.Linear(cfg.d_model, cfg.d_ff),
-            nn.GELU(),
-            nn.Dropout(cfg.dropout),
-            nn.Linear(cfg.d_ff, cfg.d_model),
-            nn.Dropout(cfg.dropout),
-        )
+        
+        if cfg.use_moe:
+            self.ff = MoE(cfg)
+        else:
+            self.ff = nn.Sequential(
+                nn.Linear(cfg.d_model, cfg.d_ff),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+                nn.Linear(cfg.d_ff, cfg.d_model),
+                nn.Dropout(cfg.dropout),
+            )
 
     def forward(self, x: torch.Tensor, need_weights: bool = False):
         attn_out, attn_weights = self.attn(self.ln1(x), need_weights=need_weights)
