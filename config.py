@@ -12,7 +12,7 @@ class ModelConfig:
     dropout: float = 0.1
     attention_type: str = "softmax"
     # MoE parameters
-    use_moe: bool = False
+    use_moe: bool = True
     num_experts: int = 4
     top_k: int = 2
     moe_hidden_dim: int | None = None  # If None, uses d_ff
