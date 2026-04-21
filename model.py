@@ -175,7 +175,7 @@ class TinyTransformerLM(nn.Module):
             raise ValueError(f"seq len {T} > max_seq_len {self.cfg.max_seq_len}")
  
         pos = torch.arange(T, device=idx.device).unsqueeze(0)  # (1, T)
-        x = self.emb_drop(self.token_emb(idx) + self.pos_emb(pos))
+        x = self.drop(self.token_emb(idx) + self.pos_emb(pos))
  
         attentions: list[torch.Tensor] = []
         aux_loss = torch.tensor(0.0, device=idx.device)
