@@ -1,2 +1,58 @@
+# Python virtual environments
+.venv/
+.venv-*/
+venv/
 env/
-runs/
+ENV/
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+
+# Editors and operating-system metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Notebook scratch state (the notebooks themselves remain tracked)
+.ipynb_checkpoints/
+
+# Local corpora, preprocessing products, tokenizers, and model caches
+/data/*
+!/data/README.md
+!/data/.gitkeep
+
+# Generated training, inference, and visualization outputs
+/runs/
+/artifacts/
+/checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Logs, crash dumps, and temporary files
+*.log
+core
+core.*
+*.tmp
+*.temp
