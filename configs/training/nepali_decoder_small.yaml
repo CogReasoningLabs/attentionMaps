@@ -1,0 +1,41 @@
+# Decoder pretraining from the frozen, materialized Nepali BPE token IDs.
+schema_version: 1
+
+data:
+  tokenized_dir: ../../data/tokenized/aananda_nepali_bpe
+  sequence_length: 512
+  batch_size: 4
+  num_workers: 0
+  pin_memory: true
+  drop_last_batch: true
+
+model:
+  d_model: 256
+  n_heads: 8
+  n_layers: 4
+  d_ff: 1024
+  dropout: 0.1
+  attention: softmax
+  use_moe: true
+  num_experts: 4
+  top_k: 2
+
+optimization:
+  epochs: 1
+  learning_rate: 0.0003
+  grad_accumulation: 4
+  grad_clip: 1.0
+  warmup_steps: 200
+  min_lr_ratio: 0.1
+  weight_decay: 0.1
+  eval_every: 200
+  eval_iters: 20
+  max_steps: null
+  moe_aux_weight: 0.01
+
+run:
+  runs_dir: ../../runs
+  run_name: null
+  device: auto
+  seed: 42
+  compile: false

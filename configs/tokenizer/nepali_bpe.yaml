@@ -1,0 +1,53 @@
+# Train only on the processed training split. Validation and test are encoded
+# with the frozen training vocabulary and never influence BPE merge learning.
+schema_version: 1
+
+input:
+  dataset_dir: ../../data/processed/nepali_pretraining_small
+  splits: [train, validation, test]
+  training_split: train
+  text_column: text
+  id_column: doc_id
+  source_column: source
+  hash_column: text_sha256
+
+tokenizer:
+  source:
+    type: train
+  # Comparable to Aananda-giri/NepaliBPE: BPE, 50,006 vocabulary entries,
+  # whitespace-aware word boundaries, and the </w> end-of-word suffix.
+  vocab_size: 50006
+  min_frequency: 2
+  normalization: NFC
+  pre_tokenizer: whitespace
+  continuing_subword_prefix: ""
+  end_of_word_suffix: "</w>"
+  max_token_length: 64
+  max_training_segments: null
+  max_chars_per_segment: 16384
+  add_bos: true
+  add_eos: true
+  special_tokens:
+    pad: <|pad|>
+    unk: <|unk|>
+    bos: <|begin_of_text|>
+    eos: <|end_of_text|>
+    additional:
+      - <|endoftext|>
+      - <|start_header_id|>
+      - <|end_header_id|>
+      - <|eot_id|>
+      - "\n\n"
+
+output:
+  output_dir: ../../data/tokenized/nepali_bpe
+  rows_per_shard: 100000
+  batch_size: 512
+  compression: zstd
+  model_max_length: 2048
+
+# Provenance only. This does not download or reuse the reference vocabulary.
+reference:
+  repository: Aananda-giri/NepaliBPE
+  url: https://huggingface.co/Aananda-giri/NepaliBPE
+  note: Architecture reference; this tokenizer is trained from our train split.

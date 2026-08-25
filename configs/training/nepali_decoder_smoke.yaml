@@ -1,0 +1,41 @@
+# Fast pipeline verification. This is not intended as a useful language model.
+schema_version: 1
+
+data:
+  tokenized_dir: ../../data/tokenized/aananda_nepali_bpe
+  sequence_length: 64
+  batch_size: 1
+  num_workers: 0
+  pin_memory: false
+  drop_last_batch: true
+
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 1
+  d_ff: 128
+  dropout: 0.1
+  attention: softmax
+  use_moe: false
+  num_experts: 4
+  top_k: 2
+
+optimization:
+  epochs: 1
+  learning_rate: 0.0003
+  grad_accumulation: 1
+  grad_clip: 1.0
+  warmup_steps: 0
+  min_lr_ratio: 0.1
+  weight_decay: 0.1
+  eval_every: 2
+  eval_iters: 1
+  max_steps: 5
+  moe_aux_weight: 0.01
+
+run:
+  runs_dir: ../../runs
+  run_name: null
+  device: auto
+  seed: 42
+  compile: false

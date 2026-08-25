@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "name": "ne_pdf_local_sentencepiece",
+  "dataset": {
+    "source": "local",
+    "loader": "parquet",
+    "data_files": {
+      "train": "../data/processed/legacy/nepali_pdf_corpus/train.parquet",
+      "validation": "../data/processed/legacy/nepali_pdf_corpus/validation.parquet",
+      "test": "../data/processed/legacy/nepali_pdf_corpus/test.parquet"
+    },
+    "text_column": "text",
+    "language": "ne",
+    "streaming": false,
+    "splits": {
+      "train": "train",
+      "validation": "validation",
+      "test": "test",
+      "seed": 42
+    }
+  },
+  "tokenizer": {
+    "backend": "sentencepiece",
+    "vocab_size": 8000,
+    "model_type": "bpe",
+    "normalization": "nmt_nfkc",
+    "character_coverage": 1.0,
+    "byte_fallback": true,
+    "hard_vocab_limit": false,
+    "training_sentence_limit": 50000,
+    "seed": 42
+  }
+}

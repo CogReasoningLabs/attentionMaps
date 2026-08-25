@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "ne_wikipedia_sentencepiece",
+  "dataset": {
+    "source": "huggingface",
+    "loader": "wikimedia/wikipedia",
+    "dataset_config": "20231101.ne",
+    "text_column": "text",
+    "language": "ne",
+    "revision": "main",
+    "streaming": false,
+    "splits": {
+      "train": "train",
+      "validation": null,
+      "test": null,
+      "validation_fraction": 0.01,
+      "test_fraction": 0.01,
+      "seed": 42
+    }
+  },
+  "tokenizer": {
+    "backend": "sentencepiece",
+    "vocab_size": 16000,
+    "model_type": "unigram",
+    "normalization": "nmt_nfkc",
+    "character_coverage": 1.0,
+    "byte_fallback": true,
+    "hard_vocab_limit": false,
+    "training_sentence_limit": 1000000,
+    "seed": 42
+  }
+}

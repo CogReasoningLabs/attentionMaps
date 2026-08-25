@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "local_text_sentencepiece",
+  "dataset": {
+    "source": "local",
+    "loader": "text",
+    "data_files": {
+      "train": "data/train.txt",
+      "validation": "data/validation.txt",
+      "test": "data/test.txt"
+    },
+    "text_column": "text",
+    "language": "und",
+    "streaming": false,
+    "splits": {
+      "train": "train",
+      "validation": "validation",
+      "test": "test",
+      "seed": 42
+    }
+  },
+  "tokenizer": {
+    "backend": "sentencepiece",
+    "vocab_size": 8000,
+    "model_type": "unigram",
+    "normalization": "nmt_nfkc",
+    "character_coverage": 1.0,
+    "byte_fallback": true,
+    "hard_vocab_limit": false,
+    "seed": 42
+  }
+}

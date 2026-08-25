@@ -1,0 +1,49 @@
+# Encode the processed corpus with the exact published tokenizer vocabulary.
+# The immutable revision prevents token IDs from changing between runs.
+schema_version: 1
+
+input:
+  dataset_dir: ../../data/processed/nepali_pretraining_small
+  splits: [train, validation, test]
+  training_split: train
+  text_column: text
+  id_column: doc_id
+  source_column: source
+  hash_column: text_sha256
+
+tokenizer:
+  source:
+    type: huggingface
+    repository: Aananda-giri/NepaliBPE
+    revision: fa173a13d1f3c8f5386743f6c6f10db321bcae06
+    cache_dir: ../../data/cache/huggingface
+    local_files_only: false
+
+  # These roles are not declared by the upstream tokenizer_config.json, so the
+  # pipeline maps them explicitly to tokens already present in its vocabulary.
+  # No token is added and no token ID is changed.
+  add_bos: true
+  add_eos: true
+  special_tokens:
+    pad: null
+    unk: <|unk|>
+    bos: <|begin_of_text|>
+    eos: <|end_of_text|>
+    additional:
+      - <|endoftext|>
+      - <|start_header_id|>
+      - <|end_header_id|>
+      - <|eot_id|>
+      - "\n\n"
+
+output:
+  output_dir: ../../data/tokenized/aananda_nepali_bpe
+  rows_per_shard: 100000
+  batch_size: 512
+  compression: zstd
+  model_max_length: 2048
+
+reference:
+  repository: Aananda-giri/NepaliBPE
+  url: https://huggingface.co/Aananda-giri/NepaliBPE
+  exact_artifacts: true
