@@ -1,5 +1,6 @@
-# Encode the processed corpus with the exact published tokenizer vocabulary.
-# The immutable revision prevents token IDs from changing between runs.
+# Try an existing third-party Nepali BPE tokenizer hosted on Hugging Face.
+# The account namespace in the repository ID below is only a Hub location; it
+# is not the tokenizer architecture or the name of a model in this project.
 schema_version: 1
 
 input:
@@ -19,7 +20,7 @@ tokenizer:
     cache_dir: ../../data/cache/huggingface
     local_files_only: false
 
-  # These roles are not declared by the upstream tokenizer_config.json, so the
+  # These roles are not declared by the downloaded tokenizer_config.json, so the
   # pipeline maps them explicitly to tokens already present in its vocabulary.
   # No token is added and no token ID is changed.
   add_bos: true
@@ -37,13 +38,8 @@ tokenizer:
       - "\n\n"
 
 output:
-  output_dir: ../../data/tokenized/aananda_nepali_bpe
+  output_dir: ../../data/tokenized/huggingface_nepali_bpe
   rows_per_shard: 100000
   batch_size: 512
   compression: zstd
   model_max_length: 2048
-
-reference:
-  repository: Aananda-giri/NepaliBPE
-  url: https://huggingface.co/Aananda-giri/NepaliBPE
-  exact_artifacts: true

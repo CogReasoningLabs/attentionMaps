@@ -51,9 +51,9 @@ Only the second command controls source inclusion and split sizes. Cleaning
 thresholds decide whether individual documents are valid; they are not dataset
 sampling percentages.
 
-Then apply the exact pinned Hugging Face tokenizer:
+Then try the configured third-party Hugging Face BPE tokenizer:
 
 ```bash
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml
 ```

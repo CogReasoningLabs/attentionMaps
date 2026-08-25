@@ -2,7 +2,7 @@
 schema_version: 1
 
 data:
-  tokenized_dir: ../../data/tokenized/aananda_nepali_bpe
+  tokenized_dir: ../../data/tokenized/huggingface_nepali_bpe
   sequence_length: 512
   batch_size: 4
   num_workers: 0

@@ -13,7 +13,7 @@ from attention_maps.tokenization.pipeline import (
 )
 
 
-DEFAULT_CONFIG = Path("configs/tokenizer/aananda_nepali_bpe.yaml")
+DEFAULT_CONFIG = Path("configs/tokenizer/huggingface_nepali_bpe.yaml")
 
 
 def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:

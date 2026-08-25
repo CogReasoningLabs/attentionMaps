@@ -105,17 +105,20 @@ The final notebook verifies schemas, source proportions, split sizes, text
 lengths, duplicate hashes, representative full records, and train/test
 separation.
 
-## 5. Apply the exact existing tokenizer
+## 5. Try the available Hugging Face BPE tokenizer
 
 ```bash
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml
 ```
 
-This loads `Aananda-giri/NepaliBPE` at its pinned commit and preserves the
-published vocabulary and IDs. It adds configured BOS/EOS IDs already present
-in that vocabulary and writes document-level `input_ids` for all three splits.
-It does not train BPE.
+This experiment downloads an existing third-party Nepali BPE tokenizer from a
+configured Hugging Face repository. The `account/repository` format is a Hub
+location; its account namespace is not the tokenizer architecture or the name
+of a model in this project. The recorded commit makes the experiment
+reproducible, while the downloaded vocabulary and IDs remain unchanged. The
+pipeline adds configured BOS/EOS IDs already present in that vocabulary and
+writes document-level `input_ids` for all three splits. It does not train BPE.
 
 Use `configs/tokenizer/nepali_bpe.yaml` only for a deliberate new-tokenizer
 experiment. That path learns merges exclusively from the training split and
@@ -158,4 +161,3 @@ for the detailed tensor flow.
 - never train tokenizer merges on validation or test;
 - keep tokenization and training YAML files with the run;
 - evaluate with `best.pt`; use `latest.pt` only when resuming optimizer state.
-

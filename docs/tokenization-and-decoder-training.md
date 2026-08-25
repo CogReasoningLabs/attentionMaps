@@ -2,19 +2,21 @@
 
 ## How tokenization happened
 
-The current run uses the exact published tokenizer rather than learning a new
-vocabulary. The sequence was:
+The current run tried a third-party Nepali BPE tokenizer that was available on
+Hugging Face rather than learning a new vocabulary. The repository owner's
+account name is only part of the Hub address; it is not the BPE architecture or
+the name of our model. The sequence was:
 
 ```text
-Aananda-giri/NepaliBPE at pinned commit fa173a1...
-→ load its serialized tokenizer.json unchanged
+configured Hugging Face repository at recorded commit fa173a1...
+→ load the available serialized tokenizer.json unchanged
 → verify its 50,006-entry vocabulary and configured token roles
 → encode train, validation, and test with the frozen tokenizer
 → add BOS and EOS around every document
 → save document-level input_ids to Parquet
 ```
 
-The published BPE splits text using its own serialized normalizer,
+The downloaded BPE splits text using its serialized normalizer,
 pre-tokenizer, merge model, decoder, and `</w>` end-of-word convention. No
 locally configured normalization or merge rule replaces those components.
 
@@ -27,7 +29,7 @@ raw IDs: 1621, 285, 14413, 27675, 251
 saved IDs: 50000, 1621, 285, 14413, 27675, 251, 50001
 ```
 
-The configured roles point to tokens already present upstream:
+The configured roles point to tokens already present in the downloaded vocabulary:
 
 ```text
 PAD=not configured  UNK=1  BOS=50000  EOS=50001

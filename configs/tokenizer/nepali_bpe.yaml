@@ -14,7 +14,7 @@ input:
 tokenizer:
   source:
     type: train
-  # Comparable to Aananda-giri/NepaliBPE: BPE, 50,006 vocabulary entries,
+  # A separate BPE experiment with 50,006 vocabulary entries,
   # whitespace-aware word boundaries, and the </w> end-of-word suffix.
   vocab_size: 50006
   min_frequency: 2
@@ -45,9 +45,3 @@ output:
   batch_size: 512
   compression: zstd
   model_max_length: 2048
-
-# Provenance only. This does not download or reuse the reference vocabulary.
-reference:
-  repository: Aananda-giri/NepaliBPE
-  url: https://huggingface.co/Aananda-giri/NepaliBPE
-  note: Architecture reference; this tokenizer is trained from our train split.

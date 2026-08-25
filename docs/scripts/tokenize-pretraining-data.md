@@ -1,7 +1,7 @@
 # Tokenize pretraining data
 
 `python -m attention_maps.tokenization` is stage 4 of the corpus pipeline. It
-can load an exact Hugging Face tokenizer, load local artifacts, or train a
+can try an existing Hugging Face tokenizer, load local artifacts, or train a
 custom BPE:
 
 ```text
@@ -11,26 +11,27 @@ data/processed/<run>/{train,validation,test}.parquet
     → data/tokenized/<run>/{train,validation,test}/part-*.parquet
 ```
 
-The default is `configs/tokenizer/aananda_nepali_bpe.yaml`. It downloads the
-exact [`Aananda-giri/NepaliBPE`](https://huggingface.co/Aananda-giri/NepaliBPE)
-`tokenizer.json` at a pinned commit. It does not reproduce a similar BPE or
-retrain merge rules. The published 50,006-entry vocabulary and all token IDs
-remain unchanged.
+The default is `configs/tokenizer/huggingface_nepali_bpe.yaml`. It tries an
+available third-party Nepali BPE tokenizer hosted on Hugging Face and records a
+specific commit for reproducibility. The account portion of the Hub repository
+ID is only a storage namespace; it is not the tokenizer architecture or a model
+name used by this project. This path does not train new merge rules, and the
+downloaded 50,006-entry vocabulary and token IDs remain unchanged.
 
 ## Run
 
 ```bash
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml
 ```
 
 Override the dataset run or destination without editing the YAML:
 
 ```bash
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml \
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml \
   --input-dir data/processed/nepali_pretraining_v2 \
-  --output-dir data/tokenized/aananda_nepali_bpe_v2
+  --output-dir data/tokenized/huggingface_nepali_bpe_v2
 ```
 
 To train a new custom BPE instead, select its separate configuration:
@@ -54,7 +55,7 @@ manifest cannot silently disagree.
 
 | Parameter | Default | Purpose |
 |---|---:|---|
-| `--config` | `configs/tokenizer/aananda_nepali_bpe.yaml` | Versioned YAML containing source, boundary, and output settings. |
+| `--config` | `configs/tokenizer/huggingface_nepali_bpe.yaml` | Versioned YAML containing source, boundary, and output settings. |
 | `--input-dir` | YAML value | Optional override for the processed split directory. |
 | `--output-dir` | YAML value | Optional override for the tokenized artifact directory. |
 | `--tokenizer-dir` | unset | Override the configured source with a local tokenizer directory. |
@@ -79,7 +80,7 @@ manifest cannot silently disagree.
 | Field | Importance |
 |---|---|
 | `source.type` | `huggingface` loads a Hub snapshot, `local` loads local artifacts, and `train` learns a new BPE. |
-| `source.repository` | Hub repository ID, such as `Aananda-giri/NepaliBPE`. |
+| `source.repository` | Hub repository ID in `account/repository` form. The account is only a hosting namespace. |
 | `source.revision` | Branch, tag, or preferably immutable commit. Pinning a commit prevents upstream changes from changing IDs. |
 | `source.path` | Directory containing local `tokenizer.json`; used only by `local`. Relative paths resolve from the YAML. |
 | `source.cache_dir` | Hugging Face snapshot cache. It may be reused offline after the pinned snapshot is present. |
@@ -105,7 +106,7 @@ inside their `tokenizer.json`.
 | `add_bos`, `add_eos` | Add document boundaries during encoding, keeping adjacent documents distinguishable in a causal token stream. |
 | `special_tokens` | Maps semantic roles to token strings. For Hub/local sources, each non-null token must already exist. `pad` may be null when packing unpadded causal streams. |
 
-The upstream NepaliBPE metadata does not assign semantic roles, so our exact
+The downloaded tokenizer metadata does not assign semantic roles, so our
 config maps its already-existing tokens explicitly: UNK=1, BOS=50000, and
 EOS=50001. BOS/EOS are inserted around each document by the corpus pipeline;
 the tokenizer vocabulary itself is not modified.
