@@ -1,0 +1,9 @@
+# Isolated dependencies for Gemma 4 + PEFT inference. Gemma 4 is unavailable
+# in Transformers 4.x, which the legacy TensorFlow NepBERTa command requires.
+transformers>=5.7,<6
+accelerate>=1.10,<2
+peft>=0.19.1,<1
+safetensors>=0.5
+sentencepiece>=0.2
+# Required only when --quantization 4bit or 8bit is used.
+bitsandbytes>=0.48

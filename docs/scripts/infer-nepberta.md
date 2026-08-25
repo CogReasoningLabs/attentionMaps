@@ -15,7 +15,7 @@ Install its separate TensorFlow dependencies first:
 ## Basic usage
 
 ```bash
-.venv/bin/python scripts/infer_nepberta.py \
+.venv/bin/python -m attention_maps.inference.nepberta \
   "नेपाल एक {mask} देश हो।" \
   --top-k 5
 ```
@@ -80,7 +80,7 @@ or candidate count, the available count is used.
 Repeat once per candidate:
 
 ```bash
-.venv/bin/python scripts/infer_nepberta.py \
+.venv/bin/python -m attention_maps.inference.nepberta \
   "नेपाल एक {mask} देश हो।" \
   --target सुन्दर \
   --target सानो \
