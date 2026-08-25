@@ -43,9 +43,9 @@ attention_maps/
 .venv/bin/python -m attention_maps.training \
   --training-config configs/training/nepali_decoder_small.yaml
 
-# Apply the exact pinned NepaliBPE and encode final processed splits
+# Try the configured Hugging Face BPE tokenizer on the processed splits
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml
 
 # Generate from a decoder checkpoint
 .venv/bin/python -m attention_maps.inference.generate \
@@ -83,3 +83,37 @@ Training does not import inference or visualization code. The tokenization
 pipeline does not import the model. Visualization owns plotting and Unicode
 font handling; inference calls its public API only when attention export is
 requested. NepBERTa remains isolated from decoder training.
+
+## Planned stage boundaries
+
+Finetuning and alignment are the next package boundaries, but are not yet
+implemented. They should be added without moving language rules into trainers:
+
+```text
+attention_maps/
+├── finetuning/       # SFT schemas, chat formatting, loss masking, trainer CLI
+├── reward_modeling/  # preference schemas, pairwise scoring, evaluation
+└── alignment/        # offline preference optimization and optional RLHF loops
+```
+
+Shared checkpoint, tokenizer, model-loading, provenance, and evaluation
+interfaces should remain outside those stage-specific packages. The expected
+dependency direction is:
+
+```text
+canonical data + tokenizer/model adapters
+                  │
+        ┌─────────┼──────────┐
+        ▼         ▼          ▼
+ pretraining     SFT    reward/alignment
+        │         │
+        └────┬────┘
+             ▼
+ optional attention inspection
+```
+
+Attention visualization may inspect compatible pretraining and SFT models, but
+reward-model and RLHF execution must not depend on visualization. Stage
+configuration should include language metadata and template/policy selection;
+the implementation itself should work for Nepali, English, or another UTF-8
+language through configuration.

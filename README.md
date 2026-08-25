@@ -1,12 +1,20 @@
 # Attention Lab
 
-A small, modular PyTorch project for training a tiny causal language model on
-profile-defined UTF-8 corpora and visualizing attention maps. The pipeline is
-language-neutral; the current research profile targets Nepali PDF text.
+A modular language-model research codebase covering causal pretraining,
+continual pretraining, supervised finetuning, and—later—preference/reward
+modeling and RLHF. Nepali is the current research language, while dataset,
+tokenizer, and training choices must remain configurable for English and other
+UTF-8 languages.
 
 ## What this project is for
 
-This repo is designed to help you **learn and compare attention mechanisms** on a model small enough to train locally.
+The currently implemented path is strongest from corpus preparation through
+decoder pretraining, generation, and attention inspection. Finetuning and
+alignment are the next planned stages; they are not yet claimed as completed.
+
+Attention maps are an optional diagnostic for pretraining and supervised
+finetuning when a model exposes attention weights. They are not a required
+dependency for reward modeling or RLHF.
 
 It includes:
 
@@ -16,6 +24,10 @@ It includes:
 - a tiny transformer language model
 - training and validation loops
 - attention map visualization for a chosen input sentence
+
+The staged roadmap and the decision between continual pretraining and
+supervised finetuning are documented in
+[`docs/project-progress.md`](docs/project-progress.md).
 
 ## Attention variants included
 
@@ -145,15 +157,18 @@ recorded in each source's `cleaning_manifest.json`; sampling, exact cross-source
 deduplication, and document-level split assignment are recorded in
 `build_manifest.json`. See `data/README.md` for the complete directory contract.
 
-Encode all three splits with the exact pinned `Aananda-giri/NepaliBPE`
-tokenizer:
+For the current experiment, try the available Nepali BPE tokenizer hosted on
+Hugging Face:
 
 ```bash
 .venv/bin/python -m attention_maps.tokenization \
-  --config configs/tokenizer/aananda_nepali_bpe.yaml
+  --config configs/tokenizer/huggingface_nepali_bpe.yaml
 ```
 
-The pipeline preserves the published vocabulary and IDs. Use
+The configuration records its Hub repository and commit for reproducibility
+and preserves the downloaded vocabulary and IDs. The account namespace in the
+repository ID is only a hosting location; it is not the tokenizer architecture
+or a project model name. Use
 `configs/tokenizer/nepali_bpe.yaml` only when intentionally training a new,
 independent BPE vocabulary. See the
 [`tokenization reference`](docs/scripts/tokenize-pretraining-data.md) for every
