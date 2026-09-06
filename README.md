@@ -187,13 +187,16 @@ Then start the configured decoder run with
 packing, embedding, and positional-encoding flow is documented in
 [`docs/tokenization-and-decoder-training.md`](docs/tokenization-and-decoder-training.md).
 
-EDA notebooks:
+Notebooks:
 
 - `notebooks/01_nepali_pdf_corpus_exploration.ipynb` — PDF corpus
 - `notebooks/02_nepali_news_corpus_exploration.ipynb` — news corpus
 - `notebooks/03_nepali_music_lyrics_exploration.ipynb` — music/lyrics at segment and song level
 - `notebooks/04_three_corpus_comparative_eda.ipynb` — matched comparison across all three sources
 - `notebooks/05_final_pretraining_splits_inspection.ipynb` — final train/validation/test audit before tokenization
+- `notebooks/Llama2_7B_Nepali_MultiDataset_QLoRA.ipynb` — selectable
+  `saillab/alpaca-nepali-cleaned` or pipeline-cleaned translated-LIMA QLoRA
+  instruction tuning for `meta-llama/Llama-2-7b-chat-hf`
 
 ### Interactive dataset explorer
 
@@ -211,10 +214,28 @@ import optional `torchvision` modules in this text-only application.
 
 The app discovers the present Nepali datasets beneath `data/`, displays schema
 and manifest information, draws uniform random records with a full-text view,
-and creates configurable Unicode-aware word clouds. Future Parquet datasets
-placed under `data/finetuning/`, `data/sft/`, `data/preference/`, or
-`data/reward_modeling/` are discovered automatically. Use the custom-path
-option for a Parquet file or directory elsewhere.
+and creates configurable Unicode-aware word clouds. Pipeline selection is
+limited to raw, cleaned, preprocessed, and tokenized data. Original-English
+and Gemini/Gemma-translated Nepali LIMA views appear directly in the dataset
+dropdown. Use the custom-path option for a Parquet file or directory elsewhere.
+The dataset dropdown also includes the remote
+`himalaya-ai/nepali-sft-dataset`. Its 3.8 GB training split is never downloaded
+as one in-memory object: schema metrics come from streaming metadata, while
+records, word clouds, and inference prompts use a bounded shuffle buffer.
+Aya's 4,002-row Nepali training view is also available with the filter fixed to
+`language_code=npi`. Hugging Face's Parquet predicate filtering is applied in
+streaming mode, so multilingual rows are not loaded into the Streamlit process.
+The train and test splits of `IRIIS-RESEARCH/Nepali-Text-Corpus` are available
+through the same bounded Hugging Face streaming path. Its `Article` field is
+used as natural-language text and `Source` remains available as provenance.
+It also includes the Kaggle Nepali movie-review sentiment dataset and separate
+lexicon/tweet views of the Kaggle Nepali hate-speech collection. Only the
+selected Excel file is downloaded and cached; workbook inspection is read-only,
+and previews use memory-bounded reservoir sampling.
+The Kaggle OSCAR Nepali corpus is exposed through its smaller deduplicated
+`ne_dedup.txt` file. Because that file is approximately 1.2 GB, the app asks for
+explicit confirmation before downloading it. It then counts lines as a stream
+and samples from random byte offsets without loading the corpus into memory.
 
 The **Local base vs finetuned** tab discovers the final TinyLlama and GPT-2
 PEFT adapters under `finetuned_models/`. It samples an instance from the
@@ -225,18 +246,36 @@ into a model prompt and reference answer automatically. The adapter weights
 and tokenizers are local; the corresponding base checkpoint is downloaded
 from Hugging Face on first use unless cached-only mode is selected.
 
+The **Tokenizer analysis** tab compares up to four base or repository
+tokenizers without loading model weights. It reports the percentage of
+non-special vocabulary entries containing Devanagari, token fragmentation on
+the same Nepali sample, single-token Nepali word coverage, unknown-token rate,
+and per-token pieces. Use the sample-efficiency metrics alongside vocabulary
+coverage when choosing a base model; vocabulary percentage alone is not a
+model-quality score.
+
 The **Model comparison** tab can turn the selected dataset record into a
 prompt and compare Gemini Flash, Gemini Flash-Lite, Google-hosted Gemma, the
-two local finetuned adapters, HimalayaGPT 0.5B Instruct, Arkios 1B Chat, and
+two local finetuned adapters, the Hugging Face `google/gemma-4-E2B` base model,
+HimalayaGPT 0.5B Instruct, Arkios 1B Chat, and
 Hugging Face Inference Provider models over a shared temperature/top-p/top-k
 grid. Local choices do not make an inference API request. Arkios and
-HimalayaGPT each have a dedicated implementation under `attention_maps/inference/`.
+HimalayaGPT and Gemma 4 E2B each have a dedicated implementation under
+`attention_maps/inference/`.
 Source text may come from the dataset, be entered manually, or be omitted in
 prompt-only mode. System and user prompts are configured separately, and no
 model is selected automatically, preventing accidental API calls.
 Credentials are read only from the `GEMINI_API_KEY` and `HF_TOKEN` environment
 variables; the UI never accepts or displays their values. Remote requests may
 require provider access or incur cost.
+
+The **Evaluation** tab streams bounded slices from a pinned public FLORES-200
+mirror, using the `eng_Latn` and `npi_Deva` columns from its dev or devtest
+split. `HF_TOKEN` is optional and only improves Hub rate limits. The tab compares
+the LIMA teacher (`gemini-3.5-flash-lite`), local base and finetuned adapter
+variants, HimalayaGPT, and Arkios on the same English sentences. It reports
+per-instance and corpus chrF++ scores, coverage, latency, and a model comparison
+chart without loading the complete benchmark into memory.
 
 ### Nepali PDF corpus
 

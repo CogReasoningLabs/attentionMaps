@@ -33,7 +33,8 @@ the sampled reference.
 No model is selected automatically. Select one or more of Gemini 3.6 Flash,
 Gemini 3.5 Flash-Lite, Google-hosted Gemma, configured Hugging Face models,
 local GPT-2 LoRA, local TinyLlama QLoRA, HimalayaGPT 0.5B Instruct, or Arkios
-1B Chat before running. Only selected models run. Local adapter choices use
+1B Chat, or the `google/gemma-4-E2B` base checkpoint before running. Only
+selected models run. Local adapter choices use
 weights beneath `finetuned_models/`; Arkios and HimalayaGPT use Hugging Face
 snapshots. Weights come from the cache or are downloaded once. The Google models use
 `GEMINI_API_KEY`. Gemini uses the
@@ -119,6 +120,23 @@ published ChatML template. Each implementation is isolated in
 The HimalayaGPT UI profile defaults to its reference settings: temperature
 0.8, top-k 50, 96 new tokens, repetition penalty 1.08, and special-token
 stopping. Its reference-compatible manual loop does not apply top-p.
+
+Run Google's pre-trained Gemma 4 E2B checkpoint locally with:
+
+```bash
+python scripts/nepali_inference_compare.py \
+  --models gemma4-base \
+  --input-file samples.txt \
+  --local-device auto \
+  --local-dtype auto \
+  --max-new-tokens 128 \
+  --output artifacts/gemma4_base.csv
+```
+
+This is the base checkpoint, so the backend sends a direct text continuation
+rather than applying the instruction-tuned chat template. The first run
+downloads roughly 10.2 GB of BF16 weights from Hugging Face; use
+`--local-files-only` after the snapshot is cached.
 
 Without `--input-file`, the CLI streams the configured Hugging Face dataset.
 Use `--google-gemma-model` to change the Google-hosted Gemma model.

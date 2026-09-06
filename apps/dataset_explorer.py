@@ -5,10 +5,8 @@ Run with:
     streamlit run apps/dataset_explorer.py
 
 The app discovers the repository's raw, cleaned, processed, and tokenized
-Parquet datasets. It also discovers future Parquet datasets placed under
-``data/finetuning``, ``data/sft``, or ``data/preference``.
-The repository's paired LIMA English/Nepali translation JSON is also exposed
-as a dedicated dataset.
+Parquet datasets. The repository's LIMA source and translation JSON is exposed
+as separate original-English and translated-Nepali datasets.
 """
 
 from __future__ import annotations
@@ -25,8 +23,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from attention_maps.datasets.kaggle import (
+    inspect_kaggle_text,
+    inspect_kaggle_workbook,
+    sample_kaggle_text_rows,
+    sample_kaggle_workbook_rows,
+)
+from attention_maps.evaluation.flores import (
+    FLORES_DATASET_ID,
+    FLORES_SPLIT_SIZES,
+    FLORES_TRANSLATION_PROMPT,
+    LIMA_TEACHER_MODEL,
+    LIMA_TEACHER_TEMPERATURE,
+    LIMA_TEACHER_TOP_K,
+    LIMA_TEACHER_TOP_P,
+    FloresEvaluationError,
+    load_flores_examples,
+    score_flores_results,
+)
 from attention_maps.inference.comparison import (
     ComparisonConfigurationError,
+    DecodingConfig,
     DEFAULT_GEMINI_FLASH_LITE_MODEL,
     DEFAULT_GEMINI_MODEL,
     DEFAULT_GOOGLE_GEMMA_MODEL,
@@ -50,6 +67,13 @@ from attention_maps.inference.himalayagpt import (
     HimalayaGPTBackend,
     load_himalayagpt,
 )
+from attention_maps.inference.gemini_translation import GeminiTranslationBackend
+from attention_maps.inference.gemma4_base import (
+    DEFAULT_GEMMA4_BASE_MODEL_ID,
+    DEFAULT_GEMMA4_BASE_REVISION,
+    Gemma4BaseBackend,
+    load_gemma4_base,
+)
 from attention_maps.inference.local_comparison import (
     LocalAdapterSpec,
     LocalInferenceError,
@@ -59,6 +83,14 @@ from attention_maps.inference.local_comparison import (
     local_comparison_csv,
     run_local_comparison,
 )
+from attention_maps.tokenization.analysis import (
+    TokenizerAnalysisError,
+    TokenizerSpec,
+    analyses_csv,
+    analyze_tokenizer,
+    load_tokenizer,
+    tokenizer_specs,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,11 +98,29 @@ DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
 DEFAULT_FINETUNED_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
 ARKIOS_BACKEND_NAME = "Arkios 1B Chat · local"
 HIMALAYAGPT_BACKEND_NAME = "HimalayaGPT 0.5B Instruct · local"
+GEMMA4_BASE_BACKEND_NAME = "Gemma 4 E2B Base · Hugging Face local"
 DEFAULT_LIMA_TRANSLATIONS_PATH = (
     PROJECT_ROOT / "data_generation_pipeline" / "lima_translations.json"
 )
+HIMALAYA_NEPALI_SFT_DATASET_ID = "himalaya-ai/nepali-sft-dataset"
+AYA_DATASET_ID = "CohereLabs/aya_dataset"
+AYA_NEPALI_LANGUAGE_CODE = "npi"
+IRIIS_NEPALI_TEXT_CORPUS_ID = "IRIIS-RESEARCH/Nepali-Text-Corpus"
+KAGGLE_MOVIE_REVIEWS_DATASET_ID = (
+    "shikharghimire/nepali-language-sentiment-analysis-movie-reviews"
+)
+KAGGLE_HATE_SPEECH_DATASET_ID = "mohanbhandari/nepali-hate-speech-collection"
+KAGGLE_OSCAR_NEPALI_DATASET_ID = "hsebarp/oscar-corpus-nepali"
+KAGGLE_OSCAR_DEDUP_FILE = "ne_dedup.txt"
+KAGGLE_OSCAR_DEDUP_APPROX_BYTES = 1_240_000_000
 SPLIT_NAMES = ("train", "validation", "test")
-FUTURE_DATA_STAGES = ("finetuning", "sft", "preference", "reward_modeling")
+PIPELINE_STAGES = ("raw", "cleaned", "processed", "tokenized")
+PIPELINE_STAGE_LABELS = {
+    "raw": "Raw",
+    "cleaned": "Cleaned",
+    "processed": "Preprocessed",
+    "tokenized": "Tokenized",
+}
 MANIFEST_NAMES = (
     "download_manifest.json",
     "cleaning_manifest.json",
@@ -89,9 +139,13 @@ TEXT_FIELD_NAMES = (
     "text",
     "content",
     "article",
+    "Article",
     "lyrics",
     "Lyrics",
     "messages",
+    "conversations",
+    "inputs",
+    "targets",
     "prompt",
     "completion",
     "response",
@@ -179,9 +233,26 @@ class DatasetSpec:
     stage: str
     files: tuple[Path, ...]
     format: str = "parquet"
+    visible_columns: tuple[str, ...] | None = None
+    dataset_id: str | None = None
+    dataset_config: str | None = None
+    dataset_split: str | None = None
+    dataset_file: str | None = None
+    filter_column: str | None = None
+    filter_value: str | None = None
+    download_bytes: int | None = None
 
     @property
-    def location(self) -> Path:
+    def location(self) -> Path | str:
+        if self.format.startswith("kaggle") and self.dataset_id and self.dataset_file:
+            return f"kaggle://datasets/{self.dataset_id}/{self.dataset_file}"
+        if self.dataset_id:
+            config = f"/{self.dataset_config}" if self.dataset_config else ""
+            split = f"/{self.dataset_split}" if self.dataset_split else ""
+            location = f"hf://datasets/{self.dataset_id}{config}{split}"
+            if self.filter_column and self.filter_value:
+                location += f"?{self.filter_column}={self.filter_value}"
+            return location
         if len(self.files) == 1:
             return self.files[0]
         return Path(_common_path(self.files))
@@ -222,7 +293,7 @@ def _add_spec(
 
 
 def discover_datasets(data_root: Path) -> list[DatasetSpec]:
-    """Discover current and future logical Parquet datasets under ``data_root``."""
+    """Discover the four supported pipeline stages under ``data_root``."""
 
     root = data_root.expanduser().resolve()
     specs: list[DatasetSpec] = []
@@ -286,25 +357,6 @@ def discover_datasets(data_root: Path) -> list[DatasetSpec]:
                     files=_parquet_files(dataset_dir / split),
                 )
 
-    for stage in FUTURE_DATA_STAGES:
-        stage_root = root / stage
-        if not stage_root.is_dir():
-            continue
-        grouped: dict[Path, list[Path]] = defaultdict(list)
-        for parquet_path in stage_root.rglob("*.parquet"):
-            grouped[parquet_path.parent].append(parquet_path)
-        for parent, files in sorted(grouped.items(), key=lambda item: str(item[0])):
-            relative = parent.relative_to(stage_root)
-            label = str(relative) if str(relative) != "." else stage
-            _add_spec(
-                specs,
-                seen,
-                key=f"{stage}:{relative}",
-                label=label,
-                stage=stage,
-                files=files,
-            )
-
     return sorted(specs, key=lambda spec: (spec.stage, spec.label))
 
 
@@ -325,18 +377,149 @@ def custom_dataset(path: Path) -> DatasetSpec | None:
 def lima_translation_dataset(
     path: Path = DEFAULT_LIMA_TRANSLATIONS_PATH,
 ) -> DatasetSpec | None:
-    """Return the repository's paired English/Nepali LIMA translation dataset."""
+    """Return the translated-Nepali view of the repository's LIMA JSON."""
 
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         return None
     return DatasetSpec(
-        key=f"translations:{resolved}",
-        label="LIMA · Gemini/Gemma · English → Nepali",
-        stage="translations",
+        key=f"lima:translated:{resolved}",
+        label="LIMA · Translated Nepali (Gemini/Gemma)",
+        stage="dataset",
         files=(resolved,),
         format="json",
+        visible_columns=("index", "translation", "status"),
     )
+
+
+def lima_original_dataset(
+    path: Path = DEFAULT_LIMA_TRANSLATIONS_PATH,
+) -> DatasetSpec | None:
+    """Return the original-English view captured before LIMA translation."""
+
+    resolved = path.expanduser().resolve()
+    if not resolved.is_file():
+        return None
+    return DatasetSpec(
+        key=f"lima:original:{resolved}",
+        label="LIMA · Original English",
+        stage="dataset",
+        files=(resolved,),
+        format="json",
+        visible_columns=("index", "source_text", "source"),
+    )
+
+
+def himalaya_nepali_sft_dataset() -> DatasetSpec:
+    """Return the remote Himalaya Nepali SFT dataset specification."""
+
+    return DatasetSpec(
+        key=f"huggingface:{HIMALAYA_NEPALI_SFT_DATASET_ID}:train",
+        label="Himalaya AI · Nepali SFT Dataset",
+        stage="dataset",
+        files=(),
+        format="huggingface",
+        dataset_id=HIMALAYA_NEPALI_SFT_DATASET_ID,
+        dataset_split="train",
+    )
+
+
+def aya_nepali_dataset_specs() -> list[DatasetSpec]:
+    """Return the Aya training view filtered to its available Nepali rows."""
+
+    return [
+        DatasetSpec(
+            key=f"huggingface:{AYA_DATASET_ID}:train:npi",
+            label="Cohere Aya · Nepali (train)",
+            stage="dataset",
+            files=(),
+            format="huggingface",
+            dataset_id=AYA_DATASET_ID,
+            dataset_config="default",
+            dataset_split="train",
+            filter_column="language_code",
+            filter_value=AYA_NEPALI_LANGUAGE_CODE,
+        )
+    ]
+
+
+def iriis_nepali_text_corpus_specs() -> list[DatasetSpec]:
+    """Return streaming train/test views of the IRIIS Nepali text corpus."""
+
+    return [
+        DatasetSpec(
+            key=f"huggingface:{IRIIS_NEPALI_TEXT_CORPUS_ID}:{split}",
+            label=f"IRIIS · Nepali Text Corpus · {split}",
+            stage="dataset",
+            files=(),
+            format="huggingface",
+            dataset_id=IRIIS_NEPALI_TEXT_CORPUS_ID,
+            dataset_config="default",
+            dataset_split=split,
+        )
+        for split in ("train", "test")
+    ]
+
+
+def kaggle_dataset_specs() -> list[DatasetSpec]:
+    """Return the public Nepali classification workbooks hosted on Kaggle."""
+
+    return [
+        DatasetSpec(
+            key=f"kaggle:{KAGGLE_MOVIE_REVIEWS_DATASET_ID}:reviews",
+            label="Kaggle · Nepali Movie Reviews (sentiment)",
+            stage="dataset",
+            files=(),
+            format="kaggle",
+            dataset_id=KAGGLE_MOVIE_REVIEWS_DATASET_ID,
+            dataset_file="nepalimoviereviews.csv.xlsx",
+        ),
+        DatasetSpec(
+            key=f"kaggle:{KAGGLE_HATE_SPEECH_DATASET_ID}:lexicon",
+            label="Kaggle · Nepali Hate Speech (lexicon)",
+            stage="dataset",
+            files=(),
+            format="kaggle",
+            dataset_id=KAGGLE_HATE_SPEECH_DATASET_ID,
+            dataset_file="Nepali hate speech.xlsx",
+        ),
+        DatasetSpec(
+            key=f"kaggle:{KAGGLE_HATE_SPEECH_DATASET_ID}:tweets",
+            label="Kaggle · Nepali Hate Speech (tweets)",
+            stage="dataset",
+            files=(),
+            format="kaggle",
+            dataset_id=KAGGLE_HATE_SPEECH_DATASET_ID,
+            dataset_file="brb.xlsx",
+        ),
+        DatasetSpec(
+            key=f"kaggle:{KAGGLE_OSCAR_NEPALI_DATASET_ID}:deduplicated",
+            label="Kaggle · OSCAR Nepali Corpus (deduplicated)",
+            stage="dataset",
+            files=(),
+            format="kaggle_text",
+            dataset_id=KAGGLE_OSCAR_NEPALI_DATASET_ID,
+            dataset_file=KAGGLE_OSCAR_DEDUP_FILE,
+            download_bytes=KAGGLE_OSCAR_DEDUP_APPROX_BYTES,
+        ),
+    ]
+
+
+def project_inventory(
+    inventory: dict[str, Any], visible_columns: Sequence[str] | None
+) -> dict[str, Any]:
+    """Limit a shared physical dataset to the columns exposed by one view."""
+
+    if visible_columns is None:
+        return inventory
+    available = set(inventory["columns"])
+    selected = [column for column in visible_columns if column in available]
+    projected = dict(inventory)
+    projected["columns"] = selected
+    projected["schema"] = [
+        field for field in inventory["schema"] if field["column"] in selected
+    ]
+    return projected
 
 
 def file_signatures(files: Sequence[Path]) -> tuple[tuple[str, int, int], ...]:
@@ -480,6 +663,90 @@ def inspect_dataset(
     raise ValueError(f"Unsupported or mixed dataset formats: {sorted(suffixes)}")
 
 
+def inspect_huggingface_dataset(
+    dataset_id: str,
+    split: str,
+    *,
+    config: str | None = None,
+    token: str | None = None,
+    filter_column: str | None = None,
+    filter_value: str | None = None,
+) -> dict[str, Any]:
+    """Read remote streaming metadata without materializing dataset rows."""
+
+    try:
+        from datasets import load_dataset
+    except ImportError as error:
+        raise ValueError("Hugging Face datasets support requires `datasets`") from error
+    if bool(filter_column) != bool(filter_value):
+        raise ValueError("A Hugging Face filter requires both a column and value")
+    try:
+        load_options = (
+            {"filters": [(filter_column, "==", filter_value)]}
+            if filter_column and filter_value
+            else {}
+        )
+        stream = load_dataset(
+            dataset_id,
+            config,
+            split=split,
+            streaming=True,
+            token=token or None,
+            **load_options,
+        )
+        split_info = stream.info.splits.get(split)
+        features = stream.features or {}
+    except Exception as error:
+        raise ValueError(f"Could not inspect Hugging Face dataset: {error}") from error
+    if split_info is None:
+        raise ValueError(f"Hugging Face dataset has no {split!r} split metadata")
+    shard_lengths = list(getattr(split_info, "shard_lengths", None) or [])
+    shard_count = len(shard_lengths) or int(getattr(stream, "num_shards", 1))
+    inventory = {
+        "format": "huggingface",
+        "dataset_id": dataset_id,
+        "dataset_config": config,
+        "dataset_split": split,
+        "rows": int(split_info.num_examples),
+        "files": shard_count,
+        "bytes": int(split_info.num_bytes),
+        "row_groups": [],
+        "columns": list(features),
+        "schema": [
+            {
+                "column": name,
+                "type": str(feature),
+                "nullable": "unknown",
+            }
+            for name, feature in features.items()
+        ],
+        "schema_variants": 1,
+    }
+    if filter_column and filter_value:
+        try:
+            filtered_rows = sum(1 for _ in stream)
+        except Exception as error:
+            raise ValueError(
+                f"Could not count filtered Hugging Face rows: {error}"
+            ) from error
+        source_rows = inventory["rows"]
+        inventory.update(
+            {
+                "rows": filtered_rows,
+                "source_rows": source_rows,
+                "bytes": round(
+                    inventory["bytes"] * filtered_rows / source_rows
+                )
+                if source_rows
+                else 0,
+                "bytes_estimated": True,
+                "filter_column": filter_column,
+                "filter_value": filter_value,
+            }
+        )
+    return inventory
+
+
 def sample_parquet_rows(
     inventory: dict[str, Any],
     sample_size: int,
@@ -553,6 +820,98 @@ def sample_json_rows(
     return sampled
 
 
+def sample_huggingface_rows(
+    inventory: dict[str, Any],
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+    *,
+    token: str | None = None,
+    shuffle_buffer: int = 1_000,
+) -> list[dict[str, Any]]:
+    """Sample through a bounded streaming shuffle buffer."""
+
+    selected_columns = list(columns)
+    invalid = set(selected_columns) - set(inventory["columns"])
+    if invalid:
+        raise ValueError(f"Unknown Hugging Face columns: {sorted(invalid)}")
+    if sample_size <= 0:
+        return []
+    if inventory.get("filter_column") and inventory.get("filter_value"):
+        try:
+            from datasets import load_dataset
+
+            stream = load_dataset(
+                inventory["dataset_id"],
+                inventory.get("dataset_config"),
+                split=inventory["dataset_split"],
+                streaming=True,
+                token=token or None,
+                filters=[
+                    (
+                        inventory["filter_column"],
+                        "==",
+                        inventory["filter_value"],
+                    )
+                ],
+            )
+            stream = stream.shuffle(
+                seed=seed,
+                buffer_size=max(sample_size, min(int(shuffle_buffer), 200)),
+            )
+            sampled = []
+            for index, source_record in enumerate(stream.take(sample_size)):
+                if (
+                    source_record.get(inventory["filter_column"])
+                    != inventory["filter_value"]
+                ):
+                    continue
+                record = {
+                    column: source_record.get(column)
+                    for column in selected_columns
+                }
+                record[f"{VIEWER_PREFIX}row_index"] = index
+                record[f"{VIEWER_PREFIX}file"] = (
+                    f"hf://datasets/{inventory['dataset_id']}/"
+                    f"{inventory['dataset_split']}?"
+                    f"{inventory['filter_column']}={inventory['filter_value']}"
+                )
+                sampled.append(record)
+            return sampled
+        except Exception as error:
+            raise ValueError(
+                f"Could not sample filtered Hugging Face rows: {error}"
+            ) from error
+
+    try:
+        from datasets import load_dataset
+    except ImportError as error:
+        raise ValueError("Hugging Face datasets support requires `datasets`") from error
+    try:
+        stream = load_dataset(
+            inventory["dataset_id"],
+            inventory.get("dataset_config"),
+            split=inventory["dataset_split"],
+            streaming=True,
+            token=token or None,
+        )
+        stream = stream.shuffle(
+            seed=seed,
+            buffer_size=max(sample_size, min(int(shuffle_buffer), 5_000)),
+        )
+        sampled = []
+        for index, source_record in enumerate(stream.take(sample_size)):
+            record = {column: source_record.get(column) for column in selected_columns}
+            record[f"{VIEWER_PREFIX}row_index"] = source_record.get("id", index)
+            record[f"{VIEWER_PREFIX}file"] = (
+                f"hf://datasets/{inventory['dataset_id']}/{inventory['dataset_split']}"
+            )
+            sampled.append(record)
+        return sampled
+    except Exception as error:
+        raise ValueError(f"Could not stream Hugging Face dataset rows: {error}") from error
+
+
 def sample_dataset_rows(
     inventory: dict[str, Any],
     sample_size: int,
@@ -561,6 +920,17 @@ def sample_dataset_rows(
 ) -> list[dict[str, Any]]:
     """Uniformly sample a supported dataset without changing the UI contract."""
 
+    if inventory.get("format") == "huggingface":
+        token = os.getenv("HF_TOKEN") or os.getenv("HF_token")
+        return sample_huggingface_rows(
+            inventory, sample_size, seed, columns, token=token
+        )
+    if inventory.get("format") == "kaggle":
+        return sample_kaggle_workbook_rows(
+            inventory, sample_size, seed, columns
+        )
+    if inventory.get("format") == "kaggle_text":
+        return sample_kaggle_text_rows(inventory, sample_size, seed, columns)
     if inventory.get("format") == "json":
         return sample_json_rows(inventory, sample_size, seed, columns)
     return sample_parquet_rows(inventory, sample_size, seed, columns)
@@ -671,6 +1041,7 @@ def extract_text(value: Any) -> list[str]:
             "response",
             "chosen",
             "rejected",
+            "value",
         )
         selected = [value[key] for key in content_keys if key in value]
         extracted = []
@@ -866,6 +1237,8 @@ def default_columns(columns: Sequence[str]) -> list[str]:
         "doc_id",
         "text",
         "messages",
+        "inputs",
+        "targets",
         "prompt",
         "completion",
         "chosen",
@@ -904,8 +1277,8 @@ def render_messages(st: Any, messages: Any) -> bool:
         return False
     st.markdown("#### Conversation")
     for message in messages:
-        role = str(message.get("role", "unknown")).upper()
-        content = message.get("content", "")
+        role = str(message.get("role", message.get("from", "unknown"))).upper()
+        content = message.get("content", message.get("value", ""))
         st.markdown(f"**{role}**")
         st.text(str(content))
     return True
@@ -930,10 +1303,13 @@ def render_full_record(st: Any, record: dict[str, Any]) -> None:
         location_parts.append(str(viewer_fields.get("file")))
         st.caption(" · ".join(location_parts))
 
-    render_messages(st, data_fields.get("messages"))
-    long_text_fields = tuple(field for field in TEXT_FIELD_NAMES if field != "messages")
+    chat_field = data_fields.get("messages", data_fields.get("conversations"))
+    render_messages(st, chat_field)
+    long_text_fields = tuple(
+        field for field in TEXT_FIELD_NAMES if field not in {"messages", "conversations"}
+    )
     shown: set[str] = set()
-    if "source_text" in data_fields or "translation" in data_fields:
+    if "source_text" in data_fields and "translation" in data_fields:
         st.markdown("#### Original and translated text")
         original_column, translation_column = st.columns(2)
         original_column.markdown("##### Original (English)")
@@ -980,6 +1356,40 @@ def run_app() -> None:
         return inspect_dataset(signatures)
 
     @st.cache_data(show_spinner=False)
+    def cached_huggingface_inventory(
+        dataset_id: str,
+        config: str | None,
+        split: str,
+        filter_column: str | None,
+        filter_value: str | None,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> dict[str, Any]:
+        del credential_fingerprint
+        return inspect_huggingface_dataset(
+            dataset_id,
+            split,
+            config=config,
+            token=_token or None,
+            filter_column=filter_column,
+            filter_value=filter_value,
+        )
+
+    @st.cache_data(show_spinner=False)
+    def cached_kaggle_inventory(
+        dataset_id: str,
+        dataset_file: str,
+    ) -> dict[str, Any]:
+        return inspect_kaggle_workbook(dataset_id, dataset_file)
+
+    @st.cache_data(show_spinner=False)
+    def cached_kaggle_text_inventory(
+        dataset_id: str,
+        dataset_file: str,
+    ) -> dict[str, Any]:
+        return inspect_kaggle_text(dataset_id, dataset_file)
+
+    @st.cache_data(show_spinner=False)
     def cached_sample(
         inventory: dict[str, Any],
         sample_size: int,
@@ -987,6 +1397,22 @@ def run_app() -> None:
         columns: tuple[str, ...],
     ) -> list[dict[str, Any]]:
         return sample_dataset_rows(inventory, sample_size, seed, columns)
+
+    @st.cache_data(show_spinner=False)
+    def cached_flores_examples(
+        split: str,
+        offset: int,
+        limit: int,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> list[Any]:
+        del credential_fingerprint
+        return load_flores_examples(
+            split=split,
+            offset=offset,
+            limit=limit,
+            token=_token or None,
+        )
 
     @st.cache_resource(show_spinner=False)
     def cached_google_backend(
@@ -996,6 +1422,15 @@ def run_app() -> None:
     ) -> GoogleGenAIBackend:
         del credential_fingerprint
         return GoogleGenAIBackend(model_id, _api_key)
+
+    @st.cache_resource(show_spinner=False)
+    def cached_lima_teacher(
+        model_id: str,
+        credential_fingerprint: str,
+        _api_key: str,
+    ) -> GeminiTranslationBackend:
+        del credential_fingerprint
+        return GeminiTranslationBackend(_api_key, model_id)
 
     @st.cache_resource(show_spinner=False)
     def cached_huggingface_backend(
@@ -1062,6 +1497,53 @@ def run_app() -> None:
             local_files_only=local_files_only,
         )
 
+    @st.cache_resource(show_spinner=False)
+    def cached_gemma4_base(
+        model_id: str,
+        revision: str,
+        device: str,
+        dtype: str,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        return load_gemma4_base(
+            model_id=model_id,
+            revision=revision,
+            device=device,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            token=_token or None,
+        )
+
+    @st.cache_resource(show_spinner=False)
+    def cached_analysis_tokenizer(
+        key: str,
+        label: str,
+        source: str,
+        revision: str,
+        trust_remote_code: bool,
+        local: bool,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        tokenizer_spec = TokenizerSpec(
+            key=key,
+            label=label,
+            source=source,
+            revision=revision,
+            trust_remote_code=trust_remote_code,
+            local=local,
+        )
+        return load_tokenizer(
+            tokenizer_spec,
+            token=_token or None,
+            local_files_only=local_files_only,
+        )
+
     st.sidebar.header("Dataset")
     data_root_text = st.sidebar.text_input("Data root", str(DEFAULT_DATA_ROOT))
     data_root = Path(data_root_text).expanduser()
@@ -1075,20 +1557,32 @@ def run_app() -> None:
             if spec is None:
                 st.sidebar.error("No Parquet files were found at that path.")
     else:
-        specs = discover_datasets(data_root)
-        translation_spec = lima_translation_dataset()
-        if translation_spec is not None:
-            specs.append(translation_spec)
-        specs.sort(key=lambda item: (item.stage, item.label))
-        if not specs:
+        pipeline_specs = discover_datasets(data_root)
+        external_specs = [
+            item
+            for item in (
+                lima_original_dataset(),
+                lima_translation_dataset(),
+                himalaya_nepali_sft_dataset(),
+            )
+            if item is not None
+        ]
+        external_specs.extend(aya_nepali_dataset_specs())
+        external_specs.extend(iriis_nepali_text_corpus_specs())
+        external_specs.extend(kaggle_dataset_specs())
+        if not pipeline_specs and not external_specs:
             st.warning(f"No supported datasets found under `{data_root}`.")
             st.stop()
-        stages = sorted({item.stage for item in specs})
-        stage = st.sidebar.selectbox("Pipeline stage", stages)
-        stage_specs = [item for item in specs if item.stage == stage]
+        stage = st.sidebar.selectbox(
+            "Pipeline stage",
+            PIPELINE_STAGES,
+            format_func=lambda item: PIPELINE_STAGE_LABELS[item],
+        )
+        stage_specs = [item for item in pipeline_specs if item.stage == stage]
+        dataset_specs = [*external_specs, *stage_specs]
         spec = st.sidebar.selectbox(
             "Dataset / split",
-            stage_specs,
+            dataset_specs,
             format_func=lambda item: item.label,
         )
 
@@ -1096,26 +1590,96 @@ def run_app() -> None:
         st.info("Select a valid dataset to begin.")
         st.stop()
 
+    heading = (
+        f"{PIPELINE_STAGE_LABELS[spec.stage]} · {spec.label}"
+        if spec.stage in PIPELINE_STAGE_LABELS
+        else spec.label
+    )
+    large_download_key = f"large-download-confirmed:{spec.key}"
+    if (
+        spec.format == "kaggle_text"
+        and not st.session_state.get(large_download_key, False)
+    ):
+        st.subheader(heading)
+        st.code(str(spec.location), language=None)
+        st.warning(
+            "This selection uses the deduplicated OSCAR file. Kaggle must download "
+            f"approximately {format_bytes(spec.download_bytes or 0)} once before "
+            "records can be inspected. The larger duplicate-containing file is not "
+            "downloaded."
+        )
+        summary_columns = st.columns(3)
+        summary_columns[0].metric("Rows", "Not scanned")
+        summary_columns[1].metric("Files", "1")
+        summary_columns[2].metric(
+            "Approx. download", format_bytes(spec.download_bytes or 0)
+        )
+        if st.button(
+            "Download and index deduplicated OSCAR Nepali",
+            type="primary",
+            key=f"confirm-large-download:{spec.key}",
+        ):
+            st.session_state[large_download_key] = True
+            st.rerun()
+        st.info(
+            "After confirmation, the file is cached by KaggleHub. Line counting "
+            "and sampling are streaming and do not load the corpus into RAM."
+        )
+        st.stop()
+
     try:
-        signatures = file_signatures(spec.files)
         with st.spinner("Reading dataset metadata…"):
-            inventory = cached_inventory(signatures)
+            if spec.format == "huggingface":
+                hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+                inventory = cached_huggingface_inventory(
+                    spec.dataset_id or "",
+                    spec.dataset_config,
+                    spec.dataset_split or "train",
+                    spec.filter_column,
+                    spec.filter_value,
+                    secret_fingerprint(hf_token),
+                    hf_token,
+                )
+            elif spec.format == "kaggle":
+                inventory = cached_kaggle_inventory(
+                    spec.dataset_id or "",
+                    spec.dataset_file or "",
+                )
+            elif spec.format == "kaggle_text":
+                inventory = cached_kaggle_text_inventory(
+                    spec.dataset_id or "",
+                    spec.dataset_file or "",
+                )
+            else:
+                signatures = file_signatures(spec.files)
+                inventory = project_inventory(
+                    cached_inventory(signatures), spec.visible_columns
+                )
     except (OSError, ValueError, ImportError) as error:
         st.error(f"Could not inspect this dataset: {error}")
         st.stop()
 
-    st.subheader(f"{spec.stage.title()} · {spec.label}")
+    st.subheader(heading)
     st.code(str(spec.location), language=None)
     metric_columns = st.columns(5)
     metric_columns[0].metric("Rows", f"{inventory['rows']:,}")
     metric_columns[1].metric("Files", f"{inventory['files']:,}")
-    grouping_label = "JSON documents" if inventory["format"] == "json" else "Row groups"
-    grouping_value = inventory["files"] if inventory["format"] == "json" else len(
-        inventory["row_groups"]
-    )
+    if inventory["format"] == "json":
+        grouping_label, grouping_value = "JSON documents", inventory["files"]
+    elif inventory["format"] == "huggingface":
+        grouping_label, grouping_value = "Remote shards", inventory["files"]
+    elif inventory["format"] == "kaggle":
+        grouping_label, grouping_value = "Worksheets", 1
+    elif inventory["format"] == "kaggle_text":
+        grouping_label, grouping_value = "Text files", inventory["files"]
+    else:
+        grouping_label, grouping_value = "Row groups", len(inventory["row_groups"])
     metric_columns[2].metric(grouping_label, f"{grouping_value:,}")
     metric_columns[3].metric("Columns", f"{len(inventory['columns']):,}")
-    metric_columns[4].metric("Disk size", format_bytes(inventory["bytes"]))
+    metric_columns[4].metric(
+        "Estimated size" if inventory.get("bytes_estimated") else "Disk size",
+        format_bytes(inventory["bytes"]),
+    )
 
     if inventory["schema_variants"] > 1:
         st.warning(
@@ -1127,24 +1691,29 @@ def run_app() -> None:
         details_tab,
         sample_tab,
         wordcloud_tab,
+        tokenizer_tab,
         local_inference_tab,
         inference_tab,
+        evaluation_tab,
         manifest_tab,
     ) = st.tabs(
         [
             "Schema",
             "Random records",
             "Word cloud",
+            "Tokenizer analysis",
             "Local base vs finetuned",
             "Model comparison",
+            "Evaluation",
             "Manifest",
         ]
     )
 
     with details_tab:
-        st.dataframe(inventory["schema"], use_container_width=True, hide_index=True)
+        st.dataframe(inventory["schema"], width="stretch", hide_index=True)
         with st.expander("Dataset files"):
-            st.code("\n".join(str(path) for path in spec.files), language=None)
+            displayed_files = "\n".join(str(path) for path in spec.files)
+            st.code(displayed_files or str(spec.location), language=None)
 
     with sample_tab:
         controls = st.columns([1, 1, 3])
@@ -1186,13 +1755,28 @@ def run_app() -> None:
                 records = []
 
             if records:
+                sampling_description = (
+                    "Parquet predicate-filtered streaming sample"
+                    if inventory.get("filter_column")
+                    else "Bounded streaming shuffle"
+                    if inventory["format"] == "huggingface"
+                    else (
+                        "Memory-bounded uniform reservoir sample"
+                        if inventory["format"] == "kaggle"
+                        else (
+                            "Random-offset streaming line sample"
+                            if inventory["format"] == "kaggle_text"
+                            else "Uniform random sample"
+                        )
+                    )
+                )
                 st.caption(
-                    f"Uniform random sample using effective seed {effective_seed}. "
+                    f"{sampling_description} using effective seed {effective_seed}. "
                     "The table is shortened only for display; the full record below is not."
                 )
                 st.dataframe(
                     preview_records(records, preview_limit),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
                 record_index = st.selectbox(
@@ -1294,15 +1878,26 @@ def run_app() -> None:
                     ),
                 )
             else:
-                default_devanagari_font = find_devanagari_font()
+                english_dataset = spec.key.startswith("lima:original:")
+                default_font = (
+                    find_latin_font() if english_dataset else find_devanagari_font()
+                )
                 font_text = st.text_input(
                     "Font path",
-                    str(default_devanagari_font) if default_devanagari_font else "",
-                    help="Use a Devanagari-capable .ttf/.otf font for Nepali text.",
+                    str(default_font) if default_font else "",
+                    help=(
+                        "Use a font with Latin glyph coverage."
+                        if english_dataset
+                        else "Use a Devanagari-capable .ttf/.otf font for Nepali text."
+                    ),
                 )
                 stopword_text = st.text_area(
                     "Stopwords (comma, space, or newline separated)",
-                    ", ".join(DEFAULT_WORDCLOUD_STOPWORDS),
+                    ", ".join(
+                        ENGLISH_WORDCLOUD_STOPWORDS
+                        if english_dataset
+                        else DEFAULT_WORDCLOUD_STOPWORDS
+                    ),
                     height=100,
                 )
                 cloud_groups = (
@@ -1365,7 +1960,7 @@ def run_app() -> None:
                         ):
                             output_column.markdown(f"#### {title}")
                             output_column.image(
-                                cloud.to_array(), use_container_width=True
+                                cloud.to_array(), width="stretch"
                             )
                             output_column.caption(
                                 f"{len(frequencies):,} retained word types from "
@@ -1377,8 +1972,362 @@ def run_app() -> None:
                             ]
                             output_column.markdown("##### Most frequent words")
                             output_column.dataframe(
-                                top_words, use_container_width=True, hide_index=True
+                                top_words, width="stretch", hide_index=True
                             )
+
+    with tokenizer_tab:
+        st.markdown("### Nepali tokenizer coverage and efficiency")
+        st.markdown(
+            "Compare tokenizers without loading model weights. Vocabulary coverage "
+            "shows how many non-special vocabulary entries contain Devanagari. "
+            "Sample metrics show how efficiently the same Nepali text is encoded."
+        )
+        st.caption(
+            "Hosted Gemini tokenizers are not listed because their vocabulary is "
+            "not distributed as a local Hugging Face tokenizer."
+        )
+
+        available_tokenizer_specs = tokenizer_specs(DEFAULT_DATA_ROOT / "tokenized")
+        custom_tokenizer_source = st.text_input(
+            "Additional Hugging Face tokenizer/model ID (optional)",
+            key="tokenizer-custom-source",
+            placeholder="organization/model-name",
+            help=(
+                "Use this to compare a future base-model tokenizer without changing "
+                "the application code. Model weights are never loaded."
+            ),
+        ).strip()
+        if custom_tokenizer_source:
+            custom_key = hashlib.sha256(
+                custom_tokenizer_source.encode("utf-8")
+            ).hexdigest()[:12]
+            available_tokenizer_specs.append(
+                TokenizerSpec(
+                    key=f"custom:{custom_key}",
+                    label=f"Custom · {custom_tokenizer_source}",
+                    source=custom_tokenizer_source,
+                )
+            )
+        tokenizer_by_label = {
+            tokenizer_spec.label: tokenizer_spec
+            for tokenizer_spec in available_tokenizer_specs
+        }
+        default_tokenizers = [
+            label
+            for label in ("GPT-2 · base", "TinyLlama 1.1B · base")
+            if label in tokenizer_by_label
+        ]
+        selected_tokenizer_labels = st.multiselect(
+            "Tokenizers to compare",
+            list(tokenizer_by_label),
+            default=default_tokenizers,
+            key="tokenizers-to-compare",
+            help="Choose up to four tokenizers for a readable side-by-side view.",
+        )
+        if len(selected_tokenizer_labels) > 4:
+            st.error("Select at most four tokenizers per comparison.")
+
+        tokenizer_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+        runtime_columns = st.columns(2)
+        tokenizer_local_files_only = runtime_columns[0].checkbox(
+            "Use cached tokenizer files only",
+            value=False,
+            key="tokenizer-local-files-only",
+        )
+        runtime_columns[1].caption(
+            "HF_TOKEN detected for gated tokenizers."
+            if tokenizer_hf_token
+            else "No HF_TOKEN detected; gated tokenizers such as Llama 2 may fail."
+        )
+
+        tokenizer_text_mode = st.radio(
+            "Comparison text",
+            ("Custom Nepali text", "Selected dataset sample"),
+            horizontal=True,
+            key=f"tokenizer-text-mode:{spec.key}",
+        )
+        tokenizer_analysis_text = ""
+        if tokenizer_text_mode == "Custom Nepali text":
+            tokenizer_analysis_text = st.text_area(
+                "Nepali text analyzed by every tokenizer",
+                (
+                    "नेपाल प्राकृतिक सुन्दरता, सांस्कृतिक विविधता र बहुभाषिक "
+                    "समुदायले भरिएको देश हो। नेपाली भाषाका लागि प्रभावकारी "
+                    "टोकनाइजरले शब्दलाई धेरै साना टुक्रामा विभाजन गर्नु हुँदैन।"
+                ),
+                height=150,
+                key="tokenizer-custom-text",
+            )
+        else:
+            tokenizer_text_columns = text_columns(inventory["schema"])
+            if not tokenizer_text_columns:
+                st.warning(
+                    "The selected dataset has no detectable natural-language column."
+                )
+            else:
+                sample_controls = st.columns([2, 1, 1, 1])
+                preferred_tokenizer_column = (
+                    "translation"
+                    if "translation" in tokenizer_text_columns
+                    else "text" if "text" in tokenizer_text_columns
+                    else tokenizer_text_columns[0]
+                )
+                tokenizer_text_column = sample_controls[0].selectbox(
+                    "Dataset text column",
+                    tokenizer_text_columns,
+                    index=tokenizer_text_columns.index(preferred_tokenizer_column),
+                    key=f"tokenizer-text-column:{spec.key}",
+                )
+                tokenizer_sample_rows = sample_controls[1].number_input(
+                    "Sample rows",
+                    min_value=1,
+                    max_value=max(1, min(200, int(inventory["rows"]))),
+                    value=min(20, max(1, int(inventory["rows"]))),
+                    step=1,
+                    key=f"tokenizer-sample-rows:{spec.key}",
+                )
+                tokenizer_sample_seed = sample_controls[2].number_input(
+                    "Sample seed",
+                    min_value=0,
+                    value=42,
+                    step=1,
+                    key=f"tokenizer-sample-seed:{spec.key}",
+                )
+                tokenizer_maximum_characters = sample_controls[3].number_input(
+                    "Maximum characters",
+                    min_value=100,
+                    max_value=100_000,
+                    value=10_000,
+                    step=100,
+                    key=f"tokenizer-max-characters:{spec.key}",
+                )
+                tokenizer_sample_key = (
+                    f"tokenizer-sample:{spec.key}:{tokenizer_text_column}:"
+                    f"{int(tokenizer_sample_rows)}:{int(tokenizer_sample_seed)}:"
+                    f"{int(tokenizer_maximum_characters)}"
+                )
+                if st.button(
+                    "Load dataset text sample",
+                    key=f"load-tokenizer-sample:{spec.key}",
+                ):
+                    try:
+                        sampled_tokenizer_records = cached_sample(
+                            inventory,
+                            int(tokenizer_sample_rows),
+                            int(tokenizer_sample_seed),
+                            (tokenizer_text_column,),
+                        )
+                        sampled_text_parts = []
+                        for sampled_record in sampled_tokenizer_records:
+                            sampled_text_parts.extend(
+                                extract_text(sampled_record.get(tokenizer_text_column))
+                            )
+                        st.session_state[tokenizer_sample_key] = "\n\n".join(
+                            sampled_text_parts
+                        )[: int(tokenizer_maximum_characters)]
+                    except (ImportError, OSError, ValueError) as error:
+                        st.error(f"Could not load tokenizer sample text: {error}")
+                tokenizer_analysis_text = st.session_state.get(
+                    tokenizer_sample_key, ""
+                )
+                if tokenizer_analysis_text:
+                    st.caption(
+                        f"Loaded {len(tokenizer_analysis_text):,} characters from "
+                        f"`{tokenizer_text_column}`."
+                    )
+                    with st.expander("Dataset text sample preview"):
+                        st.text(tokenizer_analysis_text[:5_000])
+                else:
+                    st.info("Load a bounded dataset sample before comparing tokenizers.")
+
+        selected_tokenizer_specs = [
+            tokenizer_by_label[label] for label in selected_tokenizer_labels
+        ]
+        tokenizer_context = hashlib.sha256(
+            (
+                f"{selected_tokenizer_specs}\0{tokenizer_analysis_text}\0"
+                f"{tokenizer_local_files_only}"
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        tokenizer_results_key = f"tokenizer-results:{tokenizer_context}"
+        if st.button(
+            "Compare tokenizers",
+            type="primary",
+            key="run-tokenizer-comparison",
+            disabled=(
+                not selected_tokenizer_specs
+                or len(selected_tokenizer_specs) > 4
+                or not tokenizer_analysis_text.strip()
+            ),
+        ):
+            tokenizer_analyses = []
+            tokenizer_errors = []
+            with st.spinner(
+                f"Loading {len(selected_tokenizer_specs)} tokenizer(s) and analyzing…"
+            ):
+                for tokenizer_spec in selected_tokenizer_specs:
+                    try:
+                        analysis_tokenizer = cached_analysis_tokenizer(
+                            tokenizer_spec.key,
+                            tokenizer_spec.label,
+                            tokenizer_spec.source,
+                            tokenizer_spec.revision,
+                            tokenizer_spec.trust_remote_code,
+                            tokenizer_spec.local,
+                            tokenizer_local_files_only,
+                            secret_fingerprint(tokenizer_hf_token),
+                            tokenizer_hf_token,
+                        )
+                        tokenizer_analyses.append(
+                            analyze_tokenizer(
+                                tokenizer_spec,
+                                analysis_tokenizer,
+                                tokenizer_analysis_text,
+                            )
+                        )
+                    except (TokenizerAnalysisError, ImportError, OSError) as error:
+                        tokenizer_errors.append(
+                            {"tokenizer": tokenizer_spec.label, "error": str(error)}
+                        )
+            st.session_state[tokenizer_results_key] = {
+                "analyses": tokenizer_analyses,
+                "errors": tokenizer_errors,
+            }
+
+        tokenizer_output = st.session_state.get(tokenizer_results_key)
+        if tokenizer_output:
+            for tokenizer_error in tokenizer_output["errors"]:
+                st.error(
+                    f"{tokenizer_error['tokenizer']}: {tokenizer_error['error']}"
+                )
+            tokenizer_analyses = tokenizer_output["analyses"]
+            if tokenizer_analyses:
+                st.markdown("#### Side-by-side decision metrics")
+                st.caption(
+                    "Prefer lower tokens per Nepali word and unknown-token percentage, "
+                    "and higher single-token word coverage. Vocabulary percentage is "
+                    "descriptive—not a model-quality score."
+                )
+                metric_columns = st.columns(len(tokenizer_analyses))
+                for metric_column, tokenizer_analysis in zip(
+                    metric_columns, tokenizer_analyses
+                ):
+                    metric_column.markdown(f"##### {tokenizer_analysis.tokenizer}")
+                    metric_column.caption(f"`{tokenizer_analysis.source}`")
+                    metric_column.metric(
+                        "Devanagari vocabulary",
+                        f"{tokenizer_analysis.devanagari_vocabulary_percent:.2f}%",
+                        help=(
+                            "Percentage of non-special vocabulary entries whose token "
+                            "string contains at least one Devanagari code point."
+                        ),
+                    )
+                    metric_column.metric(
+                        "Tokens / Nepali word",
+                        f"{tokenizer_analysis.tokens_per_nepali_word:.2f}",
+                        help="Lower means less fragmentation on this exact sample.",
+                    )
+                    metric_column.metric(
+                        "Single-token word coverage",
+                        f"{tokenizer_analysis.single_token_nepali_word_percent:.2f}%",
+                        help=(
+                            "Percentage of unique Nepali words in the sample encoded as "
+                            "one token."
+                        ),
+                    )
+                    metric_column.metric(
+                        "Unknown tokens",
+                        f"{tokenizer_analysis.unknown_token_percent:.2f}%",
+                    )
+                    token_preview = " | ".join(
+                        piece.raw_token.replace("\n", "\\n")
+                        for piece in tokenizer_analysis.pieces[:40]
+                    )
+                    metric_column.code(token_preview or "—", language=None)
+
+                summary_rows = [
+                    tokenizer_analysis.summary()
+                    for tokenizer_analysis in tokenizer_analyses
+                ]
+                st.dataframe(summary_rows, width="stretch", hide_index=True)
+                chart_columns = st.columns(2)
+                chart_columns[0].markdown("##### Devanagari vocabulary coverage")
+                chart_columns[0].bar_chart(
+                    summary_rows,
+                    x="tokenizer",
+                    y="Devanagari vocabulary %",
+                )
+                chart_columns[1].markdown("##### Nepali fragmentation (lower is better)")
+                chart_columns[1].bar_chart(
+                    summary_rows,
+                    x="tokenizer",
+                    y="tokens / Nepali word",
+                )
+                leader_columns = st.columns(3)
+                vocabulary_leader = max(
+                    tokenizer_analyses,
+                    key=lambda result: result.devanagari_vocabulary_percent,
+                )
+                efficiency_leader = min(
+                    tokenizer_analyses,
+                    key=lambda result: result.tokens_per_nepali_word,
+                )
+                word_coverage_leader = max(
+                    tokenizer_analyses,
+                    key=lambda result: result.single_token_nepali_word_percent,
+                )
+                leader_columns[0].success(
+                    "Vocabulary coverage leader  \n"
+                    f"**{vocabulary_leader.tokenizer}**"
+                )
+                leader_columns[1].success(
+                    "Lowest fragmentation  \n"
+                    f"**{efficiency_leader.tokenizer}**"
+                )
+                leader_columns[2].success(
+                    "Single-token word leader  \n"
+                    f"**{word_coverage_leader.tokenizer}**"
+                )
+
+                detail_tokenizer = st.selectbox(
+                    "Inspect token pieces",
+                    tokenizer_analyses,
+                    format_func=lambda result: result.tokenizer,
+                    key=f"tokenizer-piece-detail:{tokenizer_context}",
+                )
+                st.dataframe(
+                    [piece.as_dict() for piece in detail_tokenizer.pieces],
+                    width="stretch",
+                    hide_index=True,
+                )
+                if detail_tokenizer.sample_tokens > len(detail_tokenizer.pieces):
+                    st.caption(
+                        f"Showing the first {len(detail_tokenizer.pieces):,} of "
+                        f"{detail_tokenizer.sample_tokens:,} sample tokens."
+                    )
+                with st.expander("Devanagari vocabulary token examples"):
+                    vocabulary_example_columns = st.columns(
+                        len(tokenizer_analyses)
+                    )
+                    for example_column, tokenizer_analysis in zip(
+                        vocabulary_example_columns, tokenizer_analyses
+                    ):
+                        example_column.markdown(
+                            f"**{tokenizer_analysis.tokenizer}**"
+                        )
+                        example_column.code(
+                            "\n".join(
+                                tokenizer_analysis.devanagari_vocabulary_examples
+                            )
+                            or "No Devanagari-bearing vocabulary tokens found.",
+                            language=None,
+                        )
+                st.download_button(
+                    "Download tokenizer comparison as CSV",
+                    analyses_csv(tokenizer_analyses),
+                    file_name="nepali_tokenizer_comparison.csv",
+                    mime="text/csv",
+                )
 
     with local_inference_tab:
         st.markdown(
@@ -1693,7 +2642,7 @@ def run_app() -> None:
                 for result in local_results
             ]
             st.dataframe(
-                local_summary_rows, use_container_width=True, hide_index=True
+                local_summary_rows, width="stretch", hide_index=True
             )
             results_by_decoding: dict[str, dict[str, Any]] = defaultdict(dict)
             for result in local_results:
@@ -1890,6 +2839,7 @@ def run_app() -> None:
                 "Gemini Flash Lite API",
                 "Google Gemma API",
                 "Hugging Face Inference API",
+                GEMMA4_BASE_BACKEND_NAME,
                 HIMALAYAGPT_BACKEND_NAME,
                 ARKIOS_BACKEND_NAME,
                 *local_backend_specs,
@@ -1917,8 +2867,11 @@ def run_app() -> None:
         comparison_local_files_only = False
         selected_arkios = ARKIOS_BACKEND_NAME in backend_names
         selected_himalayagpt = HIMALAYAGPT_BACKEND_NAME in backend_names
-        selected_full_local_models = int(selected_arkios) + int(
-            selected_himalayagpt
+        selected_gemma4_base = GEMMA4_BASE_BACKEND_NAME in backend_names
+        selected_full_local_models = (
+            int(selected_arkios)
+            + int(selected_himalayagpt)
+            + int(selected_gemma4_base)
         )
         if backend_names:
             backend_columns = st.columns(len(backend_names))
@@ -1980,6 +2933,12 @@ def run_app() -> None:
                         st.caption(
                             f"Model: `{DEFAULT_HIMALAYAGPT_MODEL_ID}`  \n"
                             "Pinned custom code · 2,048-token context"
+                        )
+                    elif backend_name == GEMMA4_BASE_BACKEND_NAME:
+                        st.caption(
+                            f"Model: `{DEFAULT_GEMMA4_BASE_MODEL_ID}`  \n"
+                            "Pre-trained base (not instruction tuned) · text-only UI · "
+                            "about 10.2 GB of BF16 weights"
                         )
             if selected_comparison_local_specs or selected_full_local_models:
                 st.markdown("##### Local model runtime")
@@ -2251,6 +3210,20 @@ def run_app() -> None:
                             )
                         )
                     )
+                if selected_gemma4_base:
+                    backends.append(
+                        Gemma4BaseBackend(
+                            cached_gemma4_base(
+                                DEFAULT_GEMMA4_BASE_MODEL_ID,
+                                DEFAULT_GEMMA4_BASE_REVISION,
+                                comparison_local_device,
+                                comparison_local_dtype,
+                                comparison_local_files_only,
+                                secret_fingerprint(effective_hf_token),
+                                effective_hf_token,
+                            )
+                        )
+                    )
 
                 with st.spinner(f"Running {request_count} model generations…"):
                     st.session_state[results_key] = run_comparison(
@@ -2291,7 +3264,7 @@ def run_app() -> None:
                 }
                 for result in comparison_results
             ]
-            st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+            st.dataframe(summary_rows, width="stretch", hide_index=True)
             selected_result = st.selectbox(
                 "Inspect complete output",
                 range(len(comparison_results)),
@@ -2312,10 +3285,339 @@ def run_app() -> None:
                 mime="text/csv",
             )
 
+    with evaluation_tab:
+        st.markdown("### FLORES-200 · English → Nepali")
+        st.caption(
+            f"Streams the public `{FLORES_DATASET_ID}` mirror in bounded slices; "
+            "the full benchmark is never materialized in memory. Performance is "
+            "reported with corpus chrF++ (word order 2), the primary FLORES metric."
+        )
+        flores_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+        st.caption(
+            "HF_TOKEN detected for higher Hugging Face rate limits."
+            if flores_hf_token
+            else "No HF_TOKEN detected; this public mirror supports anonymous access."
+        )
+        flores_controls = st.columns(3)
+        flores_split = flores_controls[0].selectbox(
+            "FLORES split",
+            ("devtest", "dev"),
+            key="flores-split",
+        )
+        flores_offset = flores_controls[1].number_input(
+            "Starting position",
+            min_value=0,
+            max_value=FLORES_SPLIT_SIZES[flores_split] - 1,
+            value=0,
+            step=1,
+            key=f"flores-offset:{flores_split}",
+        )
+        flores_count = flores_controls[2].number_input(
+            "Examples",
+            min_value=1,
+            max_value=min(20, FLORES_SPLIT_SIZES[flores_split] - int(flores_offset)),
+            value=min(5, FLORES_SPLIT_SIZES[flores_split] - int(flores_offset)),
+            step=1,
+            key=f"flores-count:{flores_split}:{int(flores_offset)}",
+        )
+        flores_examples_key = (
+            f"flores-examples:{flores_split}:{int(flores_offset)}:"
+            f"{int(flores_count)}"
+        )
+        if st.button("Load FLORES instances", key="load-flores-instances"):
+            try:
+                with st.spinner("Streaming the requested FLORES slice…"):
+                    st.session_state[flores_examples_key] = cached_flores_examples(
+                        flores_split,
+                        int(flores_offset),
+                        int(flores_count),
+                        secret_fingerprint(flores_hf_token),
+                        flores_hf_token,
+                    )
+            except FloresEvaluationError as error:
+                st.error(str(error))
+
+        flores_examples = st.session_state.get(flores_examples_key, [])
+        if not flores_examples:
+            st.info("Load a small FLORES slice to inspect examples and run evaluation.")
+        else:
+            st.markdown("#### Benchmark instances")
+            st.dataframe(
+                [example.as_dict() for example in flores_examples],
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.markdown("#### Models")
+            teacher_option = f"Teacher · {LIMA_TEACHER_MODEL}"
+            arkios_option = "Other · Arkios 1B Chat"
+            himalaya_option = "Other · HimalayaGPT 0.5B Instruct"
+            gemma4_base_option = "Base · Gemma 4 E2B"
+            evaluation_adapters = discover_local_adapters(
+                DEFAULT_FINETUNED_MODELS_ROOT
+            )
+            local_options: dict[str, tuple[LocalAdapterSpec, bool]] = {}
+            for adapter in evaluation_adapters:
+                local_options[f"Base · {adapter.label}"] = (adapter, False)
+                local_options[f"Finetuned · {adapter.label}"] = (adapter, True)
+            evaluation_model_options = [
+                teacher_option,
+                *local_options,
+                gemma4_base_option,
+                himalaya_option,
+                arkios_option,
+            ]
+            selected_evaluation_models = st.multiselect(
+                "Models to benchmark",
+                evaluation_model_options,
+                default=[teacher_option],
+                key="flores-models",
+                help=(
+                    "Base and finetuned choices sharing an adapter are loaded as one "
+                    "model pair and evaluated with the adapter disabled/enabled."
+                ),
+            )
+            if teacher_option in selected_evaluation_models:
+                st.caption(
+                    f"LIMA teacher detected from the translation notebook: "
+                    f"`{LIMA_TEACHER_MODEL}`, temperature "
+                    f"{LIMA_TEACHER_TEMPERATURE}, top-p {LIMA_TEACHER_TOP_P}, "
+                    f"top-k {LIMA_TEACHER_TOP_K}. Uses `GEMINI_API_KEY`."
+                )
+            if gemma4_base_option in selected_evaluation_models:
+                st.caption(
+                    f"`{DEFAULT_GEMMA4_BASE_MODEL_ID}` is the pre-trained base "
+                    "checkpoint. The first local run downloads about 10.2 GB of "
+                    "BF16 weights and may require an accepted Hub license/HF_TOKEN."
+                )
+
+            has_local_evaluation = any(
+                option in local_options for option in selected_evaluation_models
+            ) or any(
+                option in selected_evaluation_models
+                for option in (gemma4_base_option, himalaya_option, arkios_option)
+            )
+            evaluation_device = "auto"
+            evaluation_dtype = "auto"
+            evaluation_local_only = False
+            if has_local_evaluation:
+                runtime_columns = st.columns(3)
+                evaluation_device = runtime_columns[0].selectbox(
+                    "Evaluation device",
+                    ("auto", "cuda", "cpu"),
+                    key="flores-device",
+                )
+                dtype_choices = (
+                    ("auto", "float32", "bfloat16")
+                    if himalaya_option in selected_evaluation_models
+                    else ("auto", "float32", "bfloat16", "float16")
+                )
+                evaluation_dtype = runtime_columns[1].selectbox(
+                    "Evaluation dtype",
+                    dtype_choices,
+                    key="flores-dtype",
+                )
+                evaluation_local_only = runtime_columns[2].checkbox(
+                    "Cached model files only",
+                    key="flores-local-only",
+                )
+
+            st.markdown("#### Translation configuration")
+            translation_prompt = st.text_area(
+                "Translation prompt",
+                FLORES_TRANSLATION_PROMPT,
+                height=110,
+                key="flores-prompt",
+                help="Keep the `{text}` placeholder for each English source sentence.",
+            )
+            generation_columns = st.columns(2)
+            evaluation_max_tokens = generation_columns[0].number_input(
+                "Maximum new tokens",
+                min_value=16,
+                max_value=1_024,
+                value=256,
+                step=16,
+                key="flores-max-tokens",
+            )
+            evaluation_seed = generation_columns[1].number_input(
+                "Evaluation seed",
+                min_value=0,
+                value=42,
+                key="flores-seed",
+            )
+            evaluation_config = DecodingConfig(
+                temperature=LIMA_TEACHER_TEMPERATURE,
+                top_p=LIMA_TEACHER_TOP_P,
+                top_k=LIMA_TEACHER_TOP_K,
+                max_new_tokens=int(evaluation_max_tokens),
+                seed=int(evaluation_seed),
+                thinking_level="minimal",
+            )
+            evaluation_requests = len(flores_examples) * len(
+                selected_evaluation_models
+            )
+            st.info(
+                f"This run will perform {evaluation_requests} translation(s) over "
+                f"{len(flores_examples)} FLORES instance(s)."
+            )
+            if evaluation_requests > 60:
+                st.error("Select fewer examples or models; at most 60 generations are allowed.")
+
+            evaluation_context = hashlib.sha256(
+                (
+                    f"{flores_split}\0{flores_offset}\0{flores_count}\0"
+                    f"{selected_evaluation_models}\0{translation_prompt}\0"
+                    f"{evaluation_config}\0{evaluation_device}\0{evaluation_dtype}\0"
+                    f"{evaluation_local_only}"
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            evaluation_results_key = f"flores-results:{evaluation_context}"
+            if st.button(
+                "Run FLORES evaluation",
+                type="primary",
+                disabled=(
+                    not selected_evaluation_models
+                    or evaluation_requests > 60
+                    or "{text}" not in translation_prompt
+                ),
+                key="run-flores-evaluation",
+            ):
+                try:
+                    evaluation_backends = []
+                    if teacher_option in selected_evaluation_models:
+                        gemini_key = os.getenv("GEMINI_API_KEY", "")
+                        if not gemini_key:
+                            raise ComparisonConfigurationError(
+                                "GEMINI_API_KEY is required to evaluate the LIMA teacher"
+                            )
+                        evaluation_backends.append(
+                            cached_lima_teacher(
+                                LIMA_TEACHER_MODEL,
+                                secret_fingerprint(gemini_key),
+                                gemini_key,
+                            )
+                        )
+
+                    loaded_pairs: dict[str, Any] = {}
+                    for option in selected_evaluation_models:
+                        if option not in local_options:
+                            continue
+                        adapter, use_adapter = local_options[option]
+                        if adapter.key not in loaded_pairs:
+                            loaded_pairs[adapter.key] = cached_local_model_pair(
+                                adapter.key,
+                                adapter.label,
+                                str(adapter.path),
+                                adapter.base_model_id,
+                                evaluation_device,
+                                evaluation_dtype,
+                                evaluation_local_only,
+                            )
+                        evaluation_backends.append(
+                            LocalPeftBackend(
+                                loaded_pairs[adapter.key],
+                                use_adapter=use_adapter,
+                            )
+                        )
+                    if himalaya_option in selected_evaluation_models:
+                        evaluation_backends.append(
+                            HimalayaGPTBackend(
+                                cached_himalayagpt(
+                                    DEFAULT_HIMALAYAGPT_MODEL_ID,
+                                    DEFAULT_HIMALAYAGPT_REVISION,
+                                    evaluation_device,
+                                    evaluation_dtype,
+                                    evaluation_local_only,
+                                )
+                            )
+                        )
+                    if arkios_option in selected_evaluation_models:
+                        evaluation_backends.append(
+                            ArkiosBackend(
+                                cached_arkios(
+                                    DEFAULT_ARKIOS_MODEL_ID,
+                                    DEFAULT_ARKIOS_REVISION,
+                                    evaluation_device,
+                                    evaluation_dtype,
+                                    evaluation_local_only,
+                                )
+                            )
+                        )
+                    if gemma4_base_option in selected_evaluation_models:
+                        evaluation_backends.append(
+                            Gemma4BaseBackend(
+                                cached_gemma4_base(
+                                    DEFAULT_GEMMA4_BASE_MODEL_ID,
+                                    DEFAULT_GEMMA4_BASE_REVISION,
+                                    evaluation_device,
+                                    evaluation_dtype,
+                                    evaluation_local_only,
+                                    secret_fingerprint(flores_hf_token),
+                                    flores_hf_token,
+                                )
+                            )
+                        )
+
+                    with st.spinner(
+                        f"Running and scoring {evaluation_requests} translations…"
+                    ):
+                        raw_results = run_comparison(
+                            evaluation_backends,
+                            [example.source for example in flores_examples],
+                            [evaluation_config],
+                            prompt_template=translation_prompt,
+                        )
+                        detail_rows, summary_rows = score_flores_results(
+                            raw_results, flores_examples
+                        )
+                    st.session_state[evaluation_results_key] = {
+                        "details": detail_rows,
+                        "summaries": summary_rows,
+                    }
+                except (
+                    ComparisonConfigurationError,
+                    FloresEvaluationError,
+                    LocalInferenceError,
+                    ImportError,
+                    RuntimeError,
+                    OSError,
+                ) as error:
+                    st.error(f"Could not complete FLORES evaluation: {error}")
+
+            evaluation_output = st.session_state.get(evaluation_results_key)
+            if evaluation_output:
+                st.markdown("#### Benchmark performance")
+                summary_rows = evaluation_output["summaries"]
+                st.dataframe(summary_rows, width="stretch", hide_index=True)
+                chart_rows = [
+                    row for row in summary_rows if row.get("chrF++") is not None
+                ]
+                if chart_rows:
+                    st.bar_chart(chart_rows, x="model", y="chrF++")
+                st.markdown("#### Per-instance translations")
+                st.dataframe(
+                    evaluation_output["details"],
+                    width="stretch",
+                    hide_index=True,
+                )
+
     with manifest_tab:
-        manifest_path = find_manifest(spec, data_root)
+        remote_dataset = spec.format in {
+            "huggingface",
+            "kaggle",
+            "kaggle_text",
+        }
+        manifest_path = (
+            None
+            if remote_dataset
+            else find_manifest(spec, data_root)
+        )
         if manifest_path is None:
-            st.info("No associated manifest was found.")
+            st.info(
+                "Remote dataset metadata is shown in the Schema tab."
+                if remote_dataset
+                else "No associated manifest was found."
+            )
         else:
             st.caption(str(manifest_path))
             try:

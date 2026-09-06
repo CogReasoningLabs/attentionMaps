@@ -236,6 +236,27 @@ class ComparisonRunnerTests(unittest.TestCase):
         self.assertEqual(local_config.max_new_tokens, 80)
         self.assertTrue(generate.call_args.kwargs["use_adapter"])
 
+    def test_local_peft_backend_can_evaluate_the_base_model(self):
+        spec = LocalAdapterSpec(
+            key="tinyllama-nepali-alpaca-qlora",
+            label="TinyLlama",
+            path=Path("finetuned_models/tinyllama-nepali-alpaca-qlora"),
+            base_model_id="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        )
+        bundle = LocalModelPair(spec, None, None, None, "cpu", "float32")
+        backend = LocalPeftBackend(bundle, use_adapter=False)
+
+        with patch(
+            "attention_maps.inference.local_comparison.generate_local_text",
+            return_value="आधार उत्तर",
+        ) as generate:
+            backend.generate("Translate this", DecodingConfig())
+
+        self.assertEqual(
+            backend.label, "local-base:tinyllama-nepali-alpaca-qlora"
+        )
+        self.assertFalse(generate.call_args.kwargs["use_adapter"])
+
     def test_huggingface_backend_explains_unsupported_model(self):
         backend = object.__new__(HuggingFaceBackend)
         backend.model_id = "fake/unsupported"

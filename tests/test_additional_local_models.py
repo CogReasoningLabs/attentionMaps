@@ -9,6 +9,10 @@ from attention_maps.inference.himalayagpt import (
     HimalayaGPTBundle,
     build_himalayagpt_prompt_ids,
 )
+from attention_maps.inference.gemma4_base import (
+    Gemma4BaseBackend,
+    Gemma4BaseBundle,
+)
 from scripts.nepali_inference_compare import build_backends, parse_args
 
 
@@ -55,12 +59,18 @@ class AdditionalLocalModelTests(unittest.TestCase):
         himalaya_bundle = HimalayaGPTBundle(
             None, None, None, "himalaya", "pinned", "cpu", "float32"
         )
+        gemma_bundle = Gemma4BaseBundle(
+            None, None, None, "google/gemma-4-E2B", "main", "cpu", "float32"
+        )
         with patch(
             "attention_maps.inference.arkios.generate_arkios",
             return_value="arkios output",
         ), patch(
             "attention_maps.inference.himalayagpt.generate_himalayagpt",
             return_value="himalaya output",
+        ), patch(
+            "attention_maps.inference.gemma4_base.generate_gemma4_base",
+            return_value="gemma output",
         ):
             self.assertEqual(
                 ArkiosBackend(arkios_bundle).generate("prompt", DecodingConfig()),
@@ -71,6 +81,12 @@ class AdditionalLocalModelTests(unittest.TestCase):
                     "prompt", DecodingConfig()
                 ),
                 "himalaya output",
+            )
+            self.assertEqual(
+                Gemma4BaseBackend(gemma_bundle).generate(
+                    "prompt", DecodingConfig()
+                ),
+                "gemma output",
             )
 
     def test_batch_cli_builds_arkios_and_himalayagpt_backends(self):
@@ -100,6 +116,26 @@ class AdditionalLocalModelTests(unittest.TestCase):
             {type(backend) for backend in backends},
             {ArkiosBackend, HimalayaGPTBackend},
         )
+
+    def test_batch_cli_builds_gemma4_base_backend(self):
+        args = parse_args(["--models", "gemma4-base"])
+        bundle = Gemma4BaseBundle(
+            None,
+            None,
+            None,
+            args.gemma4_base_model,
+            args.gemma4_base_revision,
+            "cpu",
+            "float32",
+        )
+        with patch(
+            "scripts.nepali_inference_compare.load_gemma4_base",
+            return_value=bundle,
+        ) as loader:
+            backends = build_backends(args)
+
+        self.assertEqual([type(backend) for backend in backends], [Gemma4BaseBackend])
+        self.assertEqual(loader.call_args.kwargs["model_id"], "google/gemma-4-E2B")
 
 
 if __name__ == "__main__":

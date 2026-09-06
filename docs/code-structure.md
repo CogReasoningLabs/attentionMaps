@@ -5,9 +5,9 @@ preparation commands remain in `scripts/` because they are pipeline entry
 points rather than model internals.
 
 The standalone `apps/dataset_explorer.py` entry point provides read-only,
-interactive inspection of current and future Parquet datasets, word-cloud
-analysis, and an opt-in remote inference comparison. It remains outside the
-training package because exploration is not a training dependency.
+interactive dataset inspection, word-cloud analysis, model comparison, and
+bounded benchmark evaluation. It remains outside the training package because
+exploration is not a training dependency.
 
 ```text
 attention_maps/
@@ -15,6 +15,7 @@ attention_maps/
 ├── common/
 │   └── artifacts.py              checkpoints, JSON, and run directories
 ├── training/
+│   ├── sft_data.py               schema-flexible SFT normalization and cleaning
 │   ├── attention.py              attention implementations
 │   ├── model.py                  decoder model and MoE blocks
 │   ├── data.py                   corpus loading, encoding, and batch sampling
@@ -24,6 +25,7 @@ attention_maps/
 │   ├── cli.py                    training command
 │   └── __main__.py               python -m attention_maps.training
 ├── tokenization/
+│   ├── analysis.py               tokenizer-only Nepali coverage and efficiency metrics
 │   ├── models.py                 portable runtime tokenizer adapters
 │   ├── pipeline.py               Hub/local/custom tokenizers and Parquet encoding
 │   ├── cli.py                    materialized-tokenization command
@@ -32,10 +34,14 @@ attention_maps/
 │   ├── generate.py               causal decoder generation
 │   ├── comparison.py             shared hosted/local decoding comparison engine
 │   ├── local_comparison.py       local PEFT base-versus-adapter comparison
+│   ├── gemini_translation.py     LIMA Gemini teacher translation backend
 │   ├── arkios.py                 Arkios 1B Chat loading and generation
 │   ├── himalayagpt.py            HimalayaGPT 0.5B IT loading and generation
+│   ├── gemma4_base.py             Google Gemma 4 E2B base loading and generation
 │   ├── nepberta.py               optional masked-LM diagnostics
 │   └── himalaya_gemma.py         Gemma 4 base + PEFT adapter generation
+├── evaluation/
+│   └── flores.py                 streamed FLORES loading and chrF++ scoring
 └── visualization/
     ├── attention.py              reusable attention-map rendering
     ├── cli.py                    checkpoint visualization command

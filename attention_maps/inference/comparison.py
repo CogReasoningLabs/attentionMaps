@@ -308,9 +308,9 @@ class HuggingFaceBackend:
 
 
 class LocalPeftBackend:
-    """Adapt a loaded local PEFT model to the shared comparison interface."""
+    """Adapt either side of a loaded base/PEFT pair to the shared interface."""
 
-    def __init__(self, bundle: object):
+    def __init__(self, bundle: object, *, use_adapter: bool = True):
         from attention_maps.inference.local_comparison import LocalModelPair
 
         if not isinstance(bundle, LocalModelPair):
@@ -318,7 +318,9 @@ class LocalPeftBackend:
                 "Local PEFT comparison requires a loaded LocalModelPair"
             )
         self.bundle = bundle
-        self.label = f"local-finetuned:{bundle.spec.key}"
+        self.use_adapter = use_adapter
+        variant = "finetuned" if use_adapter else "base"
+        self.label = f"local-{variant}:{bundle.spec.key}"
 
     def generate(
         self,
@@ -344,7 +346,7 @@ class LocalPeftBackend:
             prompt,
             local_config,
             system_prompt=system_prompt or "",
-            use_adapter=True,
+            use_adapter=self.use_adapter,
         )
 
 

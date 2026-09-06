@@ -47,6 +47,12 @@ from attention_maps.inference.himalayagpt import (  # noqa: E402
     HimalayaGPTBackend,
     load_himalayagpt,
 )
+from attention_maps.inference.gemma4_base import (  # noqa: E402
+    DEFAULT_GEMMA4_BASE_MODEL_ID,
+    DEFAULT_GEMMA4_BASE_REVISION,
+    Gemma4BaseBackend,
+    load_gemma4_base,
+)
 
 
 DEFAULT_LOCAL_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
@@ -72,11 +78,13 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
             "local-tinyllama",
             "himalayagpt",
             "arkios",
+            "gemma4-base",
         ),
         help=(
             "One or more hosted or local backends; legacy 'gemma' is an alias "
             "for 'huggingface'. Local adapter choices load from finetuned_models/; "
-            "Arkios and HimalayaGPT load cached or downloaded Hub snapshots."
+            "Arkios, HimalayaGPT, and Gemma 4 E2B load cached or downloaded "
+            "Hub snapshots."
         ),
     )
     parser.add_argument("--gemini-model", default=DEFAULT_GEMINI_MODEL)
@@ -104,6 +112,10 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hf-token", default=None)
     parser.add_argument("--arkios-model", default=DEFAULT_ARKIOS_MODEL_ID)
     parser.add_argument("--arkios-revision", default=DEFAULT_ARKIOS_REVISION)
+    parser.add_argument("--gemma4-base-model", default=DEFAULT_GEMMA4_BASE_MODEL_ID)
+    parser.add_argument(
+        "--gemma4-base-revision", default=DEFAULT_GEMMA4_BASE_REVISION
+    )
     parser.add_argument(
         "--himalayagpt-model", default=DEFAULT_HIMALAYAGPT_MODEL_ID
     )
@@ -301,6 +313,19 @@ def build_backends(args: argparse.Namespace):
                     device=args.local_device,
                     dtype=args.local_dtype,
                     local_files_only=args.local_files_only,
+                )
+            )
+        )
+    if "gemma4-base" in names:
+        backends.append(
+            Gemma4BaseBackend(
+                load_gemma4_base(
+                    model_id=args.gemma4_base_model,
+                    revision=args.gemma4_base_revision,
+                    device=args.local_device,
+                    dtype=args.local_dtype,
+                    local_files_only=args.local_files_only,
+                    token=args.hf_token or os.getenv("HF_TOKEN"),
                 )
             )
         )
