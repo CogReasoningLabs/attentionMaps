@@ -26,6 +26,7 @@ step.
 | `tokenize_pretraining_data.py` | Compatibility CLI | Forwards to `attention_maps.tokenization`; new workflows should use the package command | [Tokenization reference](tokenize-pretraining-data.md) |
 | `infer_nepberta.py` | Compatibility CLI | Forwards to `attention_maps.inference.nepberta` | [NepBERTa reference](infer-nepberta.md) |
 | `infer_himalaya_gemma.py` | Compatibility CLI | Loads the Himalaya Gemma 4 base model plus its PEFT adapter for generation | [Himalaya Gemma reference](infer-himalaya-gemma.md) |
+| `nepali_inference_compare.py` | CLI | Compares hosted models and local GPT-2/TinyLlama finetuned adapters over a decoding grid | [Inference comparison](nepali-inference-compare.md) |
 | `utils/nepali_text.py` | Internal API | Shared Unicode, markup, language-ratio, and strict-character cleaning functions | [Utility API reference](nepali-text-utilities.md) |
 | `utils/tokenization.py` | Compatibility import | Re-exports `attention_maps.tokenization.pipeline` for older imports | [Tokenization reference](tokenize-pretraining-data.md#modular-code-boundary) |
 | `__init__.py`, `utils/__init__.py` | Package markers | Make imports reliable; they are not commands | No parameters |

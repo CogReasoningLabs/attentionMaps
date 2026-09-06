@@ -4,6 +4,11 @@ Reusable application code lives in the `attention_maps` package. Data
 preparation commands remain in `scripts/` because they are pipeline entry
 points rather than model internals.
 
+The standalone `apps/dataset_explorer.py` entry point provides read-only,
+interactive inspection of current and future Parquet datasets, word-cloud
+analysis, and an opt-in remote inference comparison. It remains outside the
+training package because exploration is not a training dependency.
+
 ```text
 attention_maps/
 ├── config.py                     shared experiment/profile configuration
@@ -25,6 +30,10 @@ attention_maps/
 │   └── __main__.py               python -m attention_maps.tokenization
 ├── inference/
 │   ├── generate.py               causal decoder generation
+│   ├── comparison.py             shared hosted/local decoding comparison engine
+│   ├── local_comparison.py       local PEFT base-versus-adapter comparison
+│   ├── arkios.py                 Arkios 1B Chat loading and generation
+│   ├── himalayagpt.py            HimalayaGPT 0.5B IT loading and generation
 │   ├── nepberta.py               optional masked-LM diagnostics
 │   └── himalaya_gemma.py         Gemma 4 base + PEFT adapter generation
 └── visualization/

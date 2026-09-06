@@ -8,7 +8,8 @@ data/
 ├── raw/                         # immutable downloads and extracted source files
 │   ├── nepali_pdf_corpus/
 │   ├── nepali_news_corpus/
-│   └── nepali_music_lyrics/
+│   ├── nepali_music_lyrics/
+│   └── nepcov19tweets/          # labeled sentiment data for evaluation/SFT
 ├── cleaned/                     # one canonical, cleaned dataset per source
 │   ├── nepali_pdf_corpus/
 │   ├── nepali_news_corpus/
@@ -24,6 +25,20 @@ data/
 
 Raw data preserves the downloaded files, schemas, manifests, archive, and audio.
 It is the reproducible input and is not cleaned in place.
+
+NepCOV19Tweets originates from the
+[Kaggle dataset](https://www.kaggle.com/datasets/mathew11111/nepcov19tweets).
+Because Kaggle's direct download endpoint currently returns 404, the Parquet
+copy is downloaded from the public `raygx/NepCov19Tweets` Hugging Face mirror:
+
+```bash
+python scripts/download_nepali_pretrain_corpus.py raygx/NepCov19Tweets \
+  --output-dir data/raw/nepcov19tweets
+```
+
+It contains `Sentences` and `Sentiment`, with labels `-1 = negative`,
+`0 = neutral`, and `1 = positive`. It is exposed in the dataset explorer for
+sentiment inference and is not included automatically in pretraining data.
 
 ## Stage 2: cleaned source data
 

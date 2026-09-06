@@ -52,6 +52,7 @@ scripts/             # raw → cleaned → processed data commands
 configs/             # tokenizer configuration
 profiles/            # language/dataset experiment profiles
 notebooks/           # corpus and split inspection
+apps/                # interactive, read-only dataset inspection
 ```
 
 See [`docs/code-structure.md`](docs/code-structure.md) for module boundaries,
@@ -193,6 +194,49 @@ EDA notebooks:
 - `notebooks/03_nepali_music_lyrics_exploration.ipynb` — music/lyrics at segment and song level
 - `notebooks/04_three_corpus_comparative_eda.ipynb` — matched comparison across all three sources
 - `notebooks/05_final_pretraining_splits_inspection.ipynb` — final train/validation/test audit before tokenization
+
+### Interactive dataset explorer
+
+Inspect raw, cleaned, processed, or tokenized Parquet records without loading a
+whole dataset into memory:
+
+```bash
+streamlit run apps/dataset_explorer.py
+```
+
+Install `requirements.txt` in that same Python environment first.
+HimalayaGPT's serialized tokenizer requires `tiktoken`. The app disables
+Streamlit's source watcher because its inspection of Transformers can otherwise
+import optional `torchvision` modules in this text-only application.
+
+The app discovers the present Nepali datasets beneath `data/`, displays schema
+and manifest information, draws uniform random records with a full-text view,
+and creates configurable Unicode-aware word clouds. Future Parquet datasets
+placed under `data/finetuning/`, `data/sft/`, `data/preference/`, or
+`data/reward_modeling/` are discovered automatically. Use the custom-path
+option for a Parquet file or directory elsewhere.
+
+The **Local base vs finetuned** tab discovers the final TinyLlama and GPT-2
+PEFT adapters under `finetuned_models/`. It samples an instance from the
+currently selected evaluation dataset (or accepts a custom prompt), applies a
+temperature/top-p/top-k decoding grid, and displays each base-model output
+beside its finetuned output. LIMA-style `HUMAN`/`ASSISTANT` records are split
+into a model prompt and reference answer automatically. The adapter weights
+and tokenizers are local; the corresponding base checkpoint is downloaded
+from Hugging Face on first use unless cached-only mode is selected.
+
+The **Model comparison** tab can turn the selected dataset record into a
+prompt and compare Gemini Flash, Gemini Flash-Lite, Google-hosted Gemma, the
+two local finetuned adapters, HimalayaGPT 0.5B Instruct, Arkios 1B Chat, and
+Hugging Face Inference Provider models over a shared temperature/top-p/top-k
+grid. Local choices do not make an inference API request. Arkios and
+HimalayaGPT each have a dedicated implementation under `attention_maps/inference/`.
+Source text may come from the dataset, be entered manually, or be omitted in
+prompt-only mode. System and user prompts are configured separately, and no
+model is selected automatically, preventing accidental API calls.
+Credentials are read only from the `GEMINI_API_KEY` and `HF_TOKEN` environment
+variables; the UI never accepts or displays their values. Remote requests may
+require provider access or incur cost.
 
 ### Nepali PDF corpus
 
