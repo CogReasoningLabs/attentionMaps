@@ -1,0 +1,5 @@
+[server]
+# Transformers exposes many optional vision modules lazily. Streamlit's source
+# watcher introspects those modules and accidentally imports torchvision even
+# though this application only performs text inference.
+fileWatcherType = "none"
