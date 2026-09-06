@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import time
 from dataclasses import asdict, dataclass
 from itertools import product
@@ -235,10 +237,6 @@ class GoogleGenAIBackend:
         return f"Google {family} returned no text{suffix}"
 
 
-# Backward-compatible name used by the first CLI/UI implementation.
-GeminiBackend = GoogleGenAIBackend
-
-
 class HuggingFaceBackend:
     """Generic Hugging Face Inference Providers chat-completion backend."""
 
@@ -394,6 +392,18 @@ def build_prompt(template: str, text: str | None = None) -> str:
     if not prompt.strip():
         raise ComparisonConfigurationError("formatted prompt cannot be empty")
     return prompt
+
+
+def comparison_csv(results: Sequence[ComparisonResult]) -> str:
+    """Serialize comparison results for CLI and UI exports."""
+
+    if not results:
+        return ""
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=list(results[0].as_dict()))
+    writer.writeheader()
+    writer.writerows(result.as_dict() for result in results)
+    return output.getvalue()
 
 
 def run_comparison(

@@ -14,9 +14,7 @@ as a dedicated dataset.
 from __future__ import annotations
 
 import bisect
-import csv
 import hashlib
-import io
 import json
 import os
 import random
@@ -37,6 +35,7 @@ from attention_maps.inference.comparison import (
     LocalPeftBackend,
     build_decoding_grid,
     build_prompt,
+    comparison_csv,
     run_comparison,
 )
 from attention_maps.inference.arkios import (
@@ -832,19 +831,6 @@ def parse_model_ids(value: str) -> list[str]:
     """Parse one model repository ID per line or comma."""
 
     return [item.strip() for item in value.replace(",", "\n").splitlines() if item.strip()]
-
-
-def comparison_csv(results: Sequence[Any]) -> bytes:
-    """Serialize comparison dataclasses as a UTF-8 CSV download."""
-
-    if not results:
-        return b""
-    output = io.StringIO()
-    rows = [result.as_dict() for result in results]
-    writer = csv.DictWriter(output, fieldnames=list(rows[0]))
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue().encode("utf-8")
 
 
 def secret_fingerprint(secret: str) -> str:

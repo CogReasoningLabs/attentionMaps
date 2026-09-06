@@ -45,6 +45,7 @@ dist/
 /runs/
 /artifacts/
 /checkpoints/
+/finetuned_models/**/checkpoint-*/
 /nepali_inference_results.csv
 *.ckpt
 *.pt

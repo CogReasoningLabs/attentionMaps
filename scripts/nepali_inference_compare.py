@@ -8,7 +8,6 @@ remains useful for reproducible batch comparisons and CSV export.
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 from pathlib import Path
 import sys
@@ -28,6 +27,7 @@ from attention_maps.inference.comparison import (
     HuggingFaceBackend,
     LocalPeftBackend,
     build_decoding_grid,
+    comparison_csv,
     run_comparison,
 )  # noqa: E402
 from attention_maps.inference.local_comparison import (  # noqa: E402
@@ -309,11 +309,7 @@ def build_backends(args: argparse.Namespace):
 
 def save_results(results: list[ComparisonResult], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(results[0].as_dict()) if results else []
-    with output_path.open("w", newline="", encoding="utf-8") as output_file:
-        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(result.as_dict() for result in results)
+    output_path.write_text(comparison_csv(results), encoding="utf-8")
 
 
 def print_results(results: list[ComparisonResult]) -> None:
