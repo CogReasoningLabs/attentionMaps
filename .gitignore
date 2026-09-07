@@ -25,6 +25,8 @@ dist/
 .env
 .env.*
 !.env.example
+.dataset_generator_rate_limits.sqlite3
+.dataset_generator.sqlite3
 
 # Editors and operating-system metadata
 .idea/

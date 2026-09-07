@@ -307,6 +307,54 @@ class HuggingFaceBackend:
         return str(content).strip()
 
 
+class OpenAIBackend:
+    """OpenAI Responses API backend for dataset-generation workflows."""
+
+    def __init__(self, model_id: str, api_key: str | None = None):
+        try:
+            from openai import OpenAI
+        except ImportError as error:
+            raise ComparisonConfigurationError(
+                "OpenAI inference requires `openai`; install the project requirements."
+            ) from error
+        if not api_key:
+            raise ComparisonConfigurationError(
+                "OpenAI inference requires the OPENAI_API_KEY environment variable."
+            )
+        if not model_id.strip():
+            raise ComparisonConfigurationError("OpenAI model ID cannot be empty")
+        self.model_id = model_id.strip()
+        self.label = f"openai:{self.model_id}"
+        self._client = OpenAI(api_key=api_key)
+
+    def generate(
+        self,
+        prompt: str,
+        config: DecodingConfig,
+        system_prompt: str | None = None,
+    ) -> str:
+        input_messages = []
+        if system_prompt and system_prompt.strip():
+            input_messages.append({"role": "system", "content": system_prompt.strip()})
+        input_messages.append({"role": "user", "content": prompt})
+        request: dict[str, object] = {
+            "model": self.model_id,
+            "input": input_messages,
+            "max_output_tokens": config.max_new_tokens,
+            "store": False,
+        }
+        # Some reasoning models do not accept sampling parameters.  Keeping the
+        # request minimal for deterministic temperature-zero runs is portable.
+        if config.temperature > 0:
+            request["temperature"] = config.temperature
+            request["top_p"] = config.top_p
+        response = self._client.responses.create(**request)
+        output = getattr(response, "output_text", None)
+        if not output:
+            raise RuntimeError("OpenAI returned an empty text response")
+        return str(output).strip()
+
+
 class LocalPeftBackend:
     """Adapt either side of a loaded base/PEFT pair to the shared interface."""
 
