@@ -290,6 +290,8 @@ python -m streamlit run apps/dataset_generator.py
 Add only the provider credentials you intend to use to `.env`. The app does
 not make a request until **Generate dataset** is pressed, shows the request
 count first, and applies configurable local per-minute and per-day limits.
+During a run, the UI shows the active model and record, live completion counts,
+the latest response, and a rolling table of recently generated records.
 Successful records can be downloaded as JSONL or CSV using the configured
 output schema. Failed provider calls remain visible as diagnostics but are not
 included in training-data downloads. Run metadata and records are persisted in

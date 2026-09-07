@@ -16,7 +16,7 @@ import time
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from attention_maps.inference.comparison import (
     ComparisonConfigurationError,
@@ -195,7 +195,13 @@ class _GenerationRateLedger:
             ).fetchone()[0]
         return int(minute), int(day)
 
-    def wait_and_record(self, scope: str, per_minute: int, per_day: int) -> None:
+    def wait_and_record(
+        self,
+        scope: str,
+        per_minute: int,
+        per_day: int,
+        on_wait: Callable[[float], None] | None = None,
+    ) -> None:
         """Block until a locally configured slot is available, then reserve it."""
 
         while True:
@@ -221,7 +227,10 @@ class _GenerationRateLedger:
                 waits = []
                 if len(minute_rows) >= per_minute:
                     waits.append(minute_rows[0][0] + 60 - now)
-            time.sleep(max(0.1, min(waits) if waits else 0.1))
+            wait_seconds = max(0.1, min(waits) if waits else 0.1)
+            if on_wait is not None:
+                on_wait(wait_seconds)
+            time.sleep(wait_seconds)
 
 
 class _GenerationStore:
@@ -652,13 +661,46 @@ def run_generator_app() -> None:
                 if not key: raise ComparisonConfigurationError("GEMINI_API_KEY is missing. Add it to .env and restart Streamlit.")
                 backends.append(cached_google_generator_backend(gemini_model, secret_fingerprint(key), key))
             generated = []
-            progress = st.progress(0, text="Preparing generation…")
-            total = len(records) * len(backends) * len(configs); completed = 0
-            for record in records:
+            total = len(records) * len(backends) * len(configs)
+            completed = 0
+            successful = 0
+            failed = 0
+            live_panel = st.container(border=True)
+            with live_panel:
+                st.markdown("#### Live generation")
+                live_status = st.empty()
+                progress = st.progress(0, text=f"Generated 0/{total}")
+                metric_columns = st.columns(4)
+                completed_metric = metric_columns[0].empty()
+                success_metric = metric_columns[1].empty()
+                failure_metric = metric_columns[2].empty()
+                remaining_metric = metric_columns[3].empty()
+                completed_metric.metric("Completed", 0)
+                success_metric.metric("Successful", 0)
+                failure_metric.metric("Failed", 0)
+                remaining_metric.metric("Remaining", total)
+                live_latest = st.empty()
+                live_table = st.empty()
+                st.caption("Showing the 20 most recently completed generations.")
+            for record_number, record in enumerate(records, start=1):
                 prompt = build_prompt(user_prompt, record["__source"])
                 for backend in backends:
                     for config in configs:
-                        ledger.wait_and_record(backend.label, int(per_minute), int(per_day))
+                        request_number = completed + 1
+                        live_status.info(
+                            f"Request {request_number}/{total} · record "
+                            f"{record_number}/{len(records)} · {backend.label} · "
+                            f"{config.name}"
+                        )
+                        ledger.wait_and_record(
+                            backend.label,
+                            int(per_minute),
+                            int(per_day),
+                            on_wait=lambda seconds, label=backend.label: live_status.warning(
+                                f"Local rate limit reached for {label}. "
+                                f"Waiting about {seconds:.1f} seconds…"
+                            ),
+                        )
                         started = time.perf_counter()
                         try:
                             output, error = backend.generate(prompt, config, system_prompt), ""
@@ -681,7 +723,32 @@ def run_generator_app() -> None:
                             "_status": "error" if error else "ok", "_error": error,
                             "_latency_seconds": round(time.perf_counter() - started, 3),
                         })
-                        completed += 1; progress.progress(completed / total, text=f"Generated {completed}/{total}")
+                        completed += 1
+                        if error:
+                            failed += 1
+                        else:
+                            successful += 1
+                        progress.progress(
+                            completed / total,
+                            text=f"Generated {completed}/{total}",
+                        )
+                        completed_metric.metric("Completed", completed)
+                        success_metric.metric("Successful", successful)
+                        failure_metric.metric("Failed", failed)
+                        remaining_metric.metric("Remaining", total - completed)
+                        latest_text = output if not error else error
+                        live_latest.code(
+                            f"{backend.label} · {config.name}\n\n{latest_text}",
+                            language=None,
+                        )
+                        live_table.dataframe(
+                            _result_preview_rows(generated[-20:]),
+                            width="stretch",
+                            hide_index=True,
+                        )
+            live_status.success(
+                f"Generation complete: {completed} request(s) processed."
+            )
             st.session_state["dataset_generator_results"] = generated
             try:
                 run_id = store.save_run(

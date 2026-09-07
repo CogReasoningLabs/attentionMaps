@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from apps.dataset_generator import (
     _GenerationRateLedger,
@@ -120,6 +121,25 @@ class DatasetGeneratorPersistenceTests(unittest.TestCase):
             self.assertEqual(ledger.usage("other:model"), (0, 0))
             ledger.reset()
             self.assertEqual(ledger.usage("fake:model"), (0, 0))
+
+    def test_rate_ledger_reports_live_wait_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = _GenerationRateLedger(Path(directory) / "limits.sqlite3")
+            waits = []
+            with patch(
+                "apps.dataset_generator.time.time",
+                side_effect=[100.0, 100.0, 161.0],
+            ), patch("apps.dataset_generator.time.sleep") as sleep:
+                ledger.wait_and_record("fake:model", per_minute=1, per_day=5)
+                ledger.wait_and_record(
+                    "fake:model",
+                    per_minute=1,
+                    per_day=5,
+                    on_wait=waits.append,
+                )
+
+            self.assertEqual(waits, [60.0])
+            sleep.assert_called_once_with(60.0)
 
     def test_store_round_trips_successful_records(self):
         with tempfile.TemporaryDirectory() as directory:
