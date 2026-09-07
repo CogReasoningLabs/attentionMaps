@@ -2,7 +2,7 @@
 
 Run with:
 
-    streamlit run apps/dataset_generator.py
+    python -m streamlit run apps/dataset_generator.py
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from scripts.utils.nepali_text import (
     clean_text_with_result,
     normalize_whitespace,
 )
-from dataset_explorer import (
+from apps.dataset_explorer import (
     DEFAULT_DATA_ROOT,
     PROJECT_ROOT,
     VIEWER_PREFIX,
@@ -87,12 +87,67 @@ def _parse_output_schema(value: str) -> dict[str, str]:
         raise ComparisonConfigurationError(f"output schema must be valid JSON: {error}") from error
     if not isinstance(schema, dict) or not schema:
         raise ComparisonConfigurationError("output schema must be a non-empty JSON object")
-    if not all(isinstance(key, str) and key.strip() and isinstance(template, str)
-               for key, template in schema.items()):
+    if not all(
+        isinstance(key, str)
+        and key.strip()
+        and isinstance(template, str)
+        and template.strip()
+        for key, template in schema.items()
+    ):
         raise ComparisonConfigurationError(
             "each output-schema field and its template must be a non-empty string"
         )
     return schema
+
+
+def _dataset_records_for_export(
+    generated_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Return only successful user-schema records from internal result rows."""
+
+    return [
+        dict(row["_dataset_record"])
+        for row in generated_rows
+        if row.get("_status") == "ok"
+        and isinstance(row.get("_dataset_record"), dict)
+    ]
+
+
+def _records_jsonl(records: list[dict[str, str]]) -> str:
+    """Serialize public dataset records without internal generation metadata."""
+
+    if not records:
+        return ""
+    return "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n"
+
+
+def _records_csv(records: list[dict[str, str]]) -> str:
+    """Serialize records to CSV while preserving schema field order."""
+
+    if not records:
+        return ""
+    fieldnames = list(dict.fromkeys(field for record in records for field in record))
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(records)
+    return buffer.getvalue()
+
+
+def _result_preview_rows(
+    generated_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build a readable UI table while retaining provider diagnostics."""
+
+    return [
+        {
+            **dict(row.get("_dataset_record", {})),
+            "status": row.get("_status", ""),
+            "error": row.get("_error", ""),
+            "latency_seconds": row.get("_latency_seconds", 0.0),
+        }
+        for row in generated_rows
+    ]
 
 
 def _record_from_schema(
@@ -245,9 +300,25 @@ class _GenerationStore:
                 (limit,),
             )]
 
+    def records_for_run(
+        self, run_id: str, *, successful_only: bool = True
+    ) -> list[dict[str, str]]:
+        """Load public dataset records for a persisted generation run."""
+
+        query = "SELECT record_json FROM generated_records WHERE run_id = ?"
+        parameters: list[object] = [run_id]
+        if successful_only:
+            query += " AND status = ?"
+            parameters.append("ok")
+        query += " ORDER BY id"
+        with sqlite3.connect(self.path) as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        records = [json.loads(row[0]) for row in rows]
+        return [record for record in records if isinstance(record, dict)]
+
 
 def run_generator_app() -> None:
-    """Focused, resumable dataset generator UI."""
+    """Focused, persistent dataset generator UI."""
 
     try:
         import streamlit as st
@@ -532,6 +603,37 @@ def run_generator_app() -> None:
         saved_runs = store.recent_runs()
         if saved_runs:
             st.dataframe(saved_runs, width="stretch", hide_index=True)
+            saved_by_label = {
+                (
+                    f"{run['created_at']} · {run['dataset_label']} · "
+                    f"{run['records']} result(s)"
+                ): run["run_id"]
+                for run in saved_runs
+            }
+            selected_saved_label = st.selectbox(
+                "Export a saved run", list(saved_by_label)
+            )
+            saved_records = store.records_for_run(
+                saved_by_label[selected_saved_label]
+            )
+            if saved_records:
+                saved_exports = st.columns(2)
+                saved_exports[0].download_button(
+                    "Download saved JSONL",
+                    _records_jsonl(saved_records),
+                    "generated_dataset.jsonl",
+                    "application/jsonl",
+                    key="saved-jsonl",
+                )
+                saved_exports[1].download_button(
+                    "Download saved CSV",
+                    _records_csv(saved_records),
+                    "generated_dataset.csv",
+                    "text/csv",
+                    key="saved-csv",
+                )
+            else:
+                st.caption("This run has no successful records to export.")
         else:
             st.caption("No generator runs have been saved yet.")
 
@@ -612,12 +714,29 @@ def run_generator_app() -> None:
     results = st.session_state.get("dataset_generator_results", [])
     if results:
         st.markdown("### Generated records")
-        st.dataframe(results, width="stretch", hide_index=True)
-        jsonl = "\n".join(json.dumps(row, ensure_ascii=False) for row in results) + "\n"
-        csv_buffer = io.StringIO(); writer = csv.DictWriter(csv_buffer, fieldnames=list(results[0])); writer.writeheader(); writer.writerows(results)
-        exports = st.columns(2)
-        exports[0].download_button("Download JSONL", jsonl, "generated_dataset.jsonl", "application/jsonl")
-        exports[1].download_button("Download CSV", csv_buffer.getvalue(), "generated_dataset.csv", "text/csv")
+        st.dataframe(_result_preview_rows(results), width="stretch", hide_index=True)
+        successful_records = _dataset_records_for_export(results)
+        failed_count = len(results) - len(successful_records)
+        if failed_count:
+            st.warning(
+                f"{failed_count} generation(s) failed and are excluded from downloads."
+            )
+        if successful_records:
+            exports = st.columns(2)
+            exports[0].download_button(
+                "Download JSONL",
+                _records_jsonl(successful_records),
+                "generated_dataset.jsonl",
+                "application/jsonl",
+            )
+            exports[1].download_button(
+                "Download CSV",
+                _records_csv(successful_records),
+                "generated_dataset.csv",
+                "text/csv",
+            )
+        else:
+            st.error("No successful records are available to download.")
 
 
 if __name__ == "__main__":

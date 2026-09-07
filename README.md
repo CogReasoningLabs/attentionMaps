@@ -52,7 +52,7 @@ scripts/             # raw → cleaned → processed data commands
 configs/             # tokenizer configuration
 profiles/            # language/dataset experiment profiles
 notebooks/           # corpus and split inspection
-apps/                # interactive, read-only dataset inspection
+apps/                # interactive dataset inspection and generation
 ```
 
 See [`docs/code-structure.md`](docs/code-structure.md) for module boundaries,
@@ -276,6 +276,25 @@ the LIMA teacher (`gemini-3.5-flash-lite`), local base and finetuned adapter
 variants, HimalayaGPT, and Arkios on the same English sentences. It reports
 per-instance and corpus chrF++ scores, coverage, latency, and a model comparison
 chart without loading the complete benchmark into memory.
+
+### Synthetic dataset generator
+
+Generate bounded, structured training-data batches from the same local,
+Hugging Face, and Kaggle sources exposed by the dataset explorer:
+
+```bash
+cp .env.example .env
+python -m streamlit run apps/dataset_generator.py
+```
+
+Add only the provider credentials you intend to use to `.env`. The app does
+not make a request until **Generate dataset** is pressed, shows the request
+count first, and applies configurable local per-minute and per-day limits.
+Successful records can be downloaded as JSONL or CSV using the configured
+output schema. Failed provider calls remain visible as diagnostics but are not
+included in training-data downloads. Run metadata and records are persisted in
+the ignored `.dataset_generator.sqlite3` database so successful records from a
+previous run can be downloaded after restarting the app.
 
 ### Nepali PDF corpus
 

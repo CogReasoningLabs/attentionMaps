@@ -310,6 +310,8 @@ class HuggingFaceBackend:
 class OpenAIBackend:
     """OpenAI Responses API backend for dataset-generation workflows."""
 
+    _NO_SAMPLING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
     def __init__(self, model_id: str, api_key: str | None = None):
         try:
             from openai import OpenAI
@@ -333,21 +335,19 @@ class OpenAIBackend:
         config: DecodingConfig,
         system_prompt: str | None = None,
     ) -> str:
-        input_messages = []
-        if system_prompt and system_prompt.strip():
-            input_messages.append({"role": "system", "content": system_prompt.strip()})
-        input_messages.append({"role": "user", "content": prompt})
         request: dict[str, object] = {
             "model": self.model_id,
-            "input": input_messages,
+            "input": prompt,
             "max_output_tokens": config.max_new_tokens,
             "store": False,
         }
-        # Some reasoning models do not accept sampling parameters.  Keeping the
-        # request minimal for deterministic temperature-zero runs is portable.
-        if config.temperature > 0:
+        if system_prompt and system_prompt.strip():
+            request["instructions"] = system_prompt.strip()
+        # Current reasoning models reject sampling parameters. For compatible
+        # models, vary temperature only: the API recommends changing either
+        # temperature or top_p rather than both.
+        if not self.model_id.lower().startswith(self._NO_SAMPLING_PREFIXES):
             request["temperature"] = config.temperature
-            request["top_p"] = config.top_p
         response = self._client.responses.create(**request)
         output = getattr(response, "output_text", None)
         if not output:

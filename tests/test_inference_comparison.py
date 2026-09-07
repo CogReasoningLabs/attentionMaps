@@ -8,6 +8,7 @@ from attention_maps.inference.comparison import (
     GoogleGenAIBackend,
     HuggingFaceBackend,
     LocalPeftBackend,
+    OpenAIBackend,
     build_decoding_grid,
     build_prompt,
     comparison_csv,
@@ -40,6 +41,24 @@ class FakeChoice:
 
 class FakeResponse:
     choices = [FakeChoice()]
+
+
+class FakeOpenAIResponse:
+    output_text = "नेपाली उत्तर"
+
+
+class FakeOpenAIResponses:
+    def __init__(self):
+        self.arguments = None
+
+    def create(self, **kwargs):
+        self.arguments = kwargs
+        return FakeOpenAIResponse()
+
+
+class FakeOpenAIClient:
+    def __init__(self):
+        self.responses = FakeOpenAIResponses()
 
 
 class FakeInferenceClient:
@@ -196,6 +215,38 @@ class ComparisonRunnerTests(unittest.TestCase):
             backend._client.arguments["messages"][0],
             {"role": "system", "content": "नेपालीमा उत्तर दिनुहोस्।"},
         )
+
+    def test_openai_backend_uses_responses_instructions_and_temperature(self):
+        backend = object.__new__(OpenAIBackend)
+        backend.model_id = "gpt-4.1-mini"
+        backend.label = "openai:gpt-4.1-mini"
+        backend._client = FakeOpenAIClient()
+
+        output = backend.generate(
+            "नेपाल",
+            DecodingConfig(temperature=0.4, top_p=0.9, max_new_tokens=80),
+            "नेपालीमा उत्तर दिनुहोस्।",
+        )
+
+        arguments = backend._client.responses.arguments
+        self.assertEqual(output, "नेपाली उत्तर")
+        self.assertEqual(arguments["input"], "नेपाल")
+        self.assertEqual(arguments["instructions"], "नेपालीमा उत्तर दिनुहोस्।")
+        self.assertEqual(arguments["temperature"], 0.4)
+        self.assertNotIn("top_p", arguments)
+        self.assertFalse(arguments["store"])
+
+    def test_openai_backend_omits_sampling_for_reasoning_models(self):
+        backend = object.__new__(OpenAIBackend)
+        backend.model_id = "gpt-5.6-terra"
+        backend.label = "openai:gpt-5.6-terra"
+        backend._client = FakeOpenAIClient()
+
+        backend.generate("नेपाल", DecodingConfig())
+
+        arguments = backend._client.responses.arguments
+        self.assertNotIn("temperature", arguments)
+        self.assertNotIn("top_p", arguments)
 
     def test_local_peft_backend_uses_shared_decoding_configuration(self):
         spec = LocalAdapterSpec(
