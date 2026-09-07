@@ -99,6 +99,7 @@ DEFAULT_FINETUNED_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
 ARKIOS_BACKEND_NAME = "Arkios 1B Chat · local"
 HIMALAYAGPT_BACKEND_NAME = "HimalayaGPT 0.5B Instruct · local"
 GEMMA4_BASE_BACKEND_NAME = "Gemma 4 E2B Base · Hugging Face local"
+GOOGLE_GEMMA_EVALUATION_OPTION = "API · Google Gemma"
 DEFAULT_LIMA_TRANSLATIONS_PATH = (
     PROJECT_ROOT / "data_generation_pipeline" / "lima_translations.json"
 )
@@ -3350,6 +3351,7 @@ def run_app() -> None:
 
             st.markdown("#### Models")
             teacher_option = f"Teacher · {LIMA_TEACHER_MODEL}"
+            google_gemma_api_option = GOOGLE_GEMMA_EVALUATION_OPTION
             arkios_option = "Other · Arkios 1B Chat"
             himalaya_option = "Other · HimalayaGPT 0.5B Instruct"
             gemma4_base_option = "Base · Gemma 4 E2B"
@@ -3362,6 +3364,7 @@ def run_app() -> None:
                 local_options[f"Finetuned · {adapter.label}"] = (adapter, True)
             evaluation_model_options = [
                 teacher_option,
+                google_gemma_api_option,
                 *local_options,
                 gemma4_base_option,
                 himalaya_option,
@@ -3383,6 +3386,17 @@ def run_app() -> None:
                     f"`{LIMA_TEACHER_MODEL}`, temperature "
                     f"{LIMA_TEACHER_TEMPERATURE}, top-p {LIMA_TEACHER_TOP_P}, "
                     f"top-k {LIMA_TEACHER_TOP_K}. Uses `GEMINI_API_KEY`."
+                )
+            evaluation_google_gemma_model = DEFAULT_GOOGLE_GEMMA_MODEL
+            if google_gemma_api_option in selected_evaluation_models:
+                evaluation_google_gemma_model = st.text_input(
+                    "Evaluation Google Gemma model",
+                    DEFAULT_GOOGLE_GEMMA_MODEL,
+                    key="flores-google-gemma-model",
+                    help=(
+                        "Uses GEMINI_API_KEY through Google's hosted Gemma "
+                        "generate_content endpoint."
+                    ),
                 )
             if gemma4_base_option in selected_evaluation_models:
                 st.caption(
@@ -3468,7 +3482,7 @@ def run_app() -> None:
                     f"{flores_split}\0{flores_offset}\0{flores_count}\0"
                     f"{selected_evaluation_models}\0{translation_prompt}\0"
                     f"{evaluation_config}\0{evaluation_device}\0{evaluation_dtype}\0"
-                    f"{evaluation_local_only}"
+                    f"{evaluation_local_only}\0{evaluation_google_gemma_model}"
                 ).encode("utf-8")
             ).hexdigest()[:16]
             evaluation_results_key = f"flores-results:{evaluation_context}"
@@ -3493,6 +3507,19 @@ def run_app() -> None:
                         evaluation_backends.append(
                             cached_lima_teacher(
                                 LIMA_TEACHER_MODEL,
+                                secret_fingerprint(gemini_key),
+                                gemini_key,
+                            )
+                        )
+                    if google_gemma_api_option in selected_evaluation_models:
+                        gemini_key = os.getenv("GEMINI_API_KEY", "")
+                        if not gemini_key:
+                            raise ComparisonConfigurationError(
+                                "GEMINI_API_KEY is required to evaluate Google Gemma"
+                            )
+                        evaluation_backends.append(
+                            cached_google_backend(
+                                evaluation_google_gemma_model,
                                 secret_fingerprint(gemini_key),
                                 gemini_key,
                             )
