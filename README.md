@@ -8,13 +8,15 @@ UTF-8 languages.
 
 ## What this project is for
 
-The currently implemented path is strongest from corpus preparation through
-decoder pretraining, generation, and attention inspection. Finetuning and
-alignment are the next planned stages; they are not yet claimed as completed.
+The current priority is dataset research: understanding candidate corpora,
+establishing cleaning and deduplication evidence, and building reproducible
+synthetic datasets. Earlier decoder-pretraining and attention-visualization
+experiments remain in the repository as useful foundations, but they are not
+treated as a completed model or attention research program.
 
-Attention maps are an optional diagnostic for pretraining and supervised
-finetuning when a model exposes attention weights. They are not a required
-dependency for reward modeling or RLHF.
+The intended sequence is **dataset research → frozen/versioned training data →
+model building → attention analysis and visualization**. Finetuning, alignment,
+and comprehensive attention research are not yet claimed as complete.
 
 It includes:
 
@@ -23,45 +25,109 @@ It includes:
 - interchangeable attention variants
 - a tiny transformer language model
 - training and validation loops
-- attention map visualization for a chosen input sentence
+- a prototype attention-map CLI from earlier model experiments
 
 The staged roadmap and the decision between continual pretraining and
 supervised finetuning are documented in
 [`docs/project-progress.md`](docs/project-progress.md).
 
-## Attention variants included
+## Three project paths
+
+### 1. Dataset exploration application — active
+
+Use this first to inspect local and remote datasets, review provider/purpose
+taxonomy, examine complete records, run bounded EDA, compare tokenizers and
+models, and evaluate decoder outputs. Synthetic pipeline artifacts are kept in
+a separate workspace inside the app rather than mixed into the corpus catalog.
+
+```bash
+.venv/bin/python -m streamlit run apps/dataset_explorer.py
+```
+
+Primary outputs are dataset evidence: schemas, deterministic samples, quality
+metrics, duplicate estimates, n-grams, co-occurrence graphs, plots, and
+reproducible EDA reports. See
+[Path 1 detailed guide](#path-1-detailed-guide--dataset-exploration-application).
+
+### 2. Synthetic dataset generation application — active foundation
+
+Use this after selecting and understanding source data. It creates bounded,
+structured records with hosted or local models, displays live progress, and
+persists successful runs for JSONL/CSV export.
+
+```bash
+cp .env.example .env
+.venv/bin/python -m streamlit run apps/dataset_generator.py
+```
+
+The **Synthetic data generation** workspace is registry-driven: LIMA
+translation is the first dataset family, with translated-Nepali and
+original-English variants. Future families and variants can be registered
+without adding another hard-coded application path. See
+[Path 2 detailed guide](#path-2-detailed-guide--synthetic-dataset-generation-application).
+
+### 3. Model building and attention visualization — planned next research path
+
+This path begins after the dataset survey, cleaning policy, deduplication rules,
+and training-data versions are finalized. The repository contains earlier
+pretraining code, checkpoints, three experimental attention implementations,
+and a command-line heatmap prototype. Those pieces are foundations—not evidence
+that the model-building or attention study is finished.
+
+The next phase must define controlled model experiments, train comparable
+checkpoints on frozen datasets, validate attention extraction across layers,
+heads, tokens, and generation steps, and then design an interactive
+visualization experience. See
+[Path 3 roadmap](#path-3-roadmap--model-building-and-attention-visualization).
+
+## Existing experimental attention foundations
 
 - `softmax` — standard scaled dot-product causal self-attention
 - `cosine` — cosine-similarity attention with causal masking
 - `linear` — a simple feature-map-based linear attention approximation for causal decoding
 
-These are intentionally compact educational implementations.
+These are intentionally compact educational implementations from the earlier
+pretraining phase. They require further research and validation before being
+used for conclusions about model behavior.
 
 ## Project structure
 
 ```text
 attention_maps/
 ├── common/          # shared checkpoint and artifact utilities
+├── explorer/        # dataset catalog, bounded inspection, and text services
+├── generation/      # synthetic-family registry, records, exports, persistence
 ├── training/        # decoder model, data loading, and training CLI
 ├── tokenization/    # tokenizer implementations and BPE pipeline
-├── inference/       # generation and NepBERTa diagnostics
-├── visualization/   # reusable attention plotting and checkpoint CLI
+├── inference/       # hosted/local model loading, generation, and comparison
+├── evaluation/      # FLORES, NLUE, and decoder benchmark services
+├── visualization/   # prototype attention plotting and checkpoint CLI
 └── config.py        # shared profile/configuration schema
 
 scripts/             # raw → cleaned → processed data commands
-configs/             # tokenizer configuration
+configs/             # EDA, tokenizer, and training configuration
 profiles/            # language/dataset experiment profiles
 notebooks/           # corpus and split inspection
-apps/                # interactive dataset inspection and generation
+apps/
+├── components/      # UI shared by explorer and generator
+├── explorer_tabs/   # feature-oriented explorer renderers
+├── dataset_explorer.py
+└── dataset_generator.py
 ```
 
 See [`docs/code-structure.md`](docs/code-structure.md) for module boundaries,
 canonical commands, and compatibility entry points.
+The refactor rules and enforced module-size budget are documented in
+[`docs/modularization.md`](docs/modularization.md).
 
 Project-level documentation:
 
 - [`docs/project-progress.md`](docs/project-progress.md) — completed work,
   design decisions, and next research steps
+- [`docs/eda-survey-progress.md`](docs/eda-survey-progress.md) — active dataset
+  survey work log
+- [`docs/eda-cleaning-notes.md`](docs/eda-cleaning-notes.md) — EDA metrics and
+  the planned auditable cleaning/deduplication logic shown in the UI
 - [`docs/nepali-pretraining-workflow.md`](docs/nepali-pretraining-workflow.md) —
   raw data through tokenization and decoder training
 - [`docs/model-inference-and-attention.md`](docs/model-inference-and-attention.md) —
@@ -107,7 +173,7 @@ Run the configuration tests with:
 python -m unittest discover -s tests -v
 ```
 
-## Train
+## Dataset preparation and historical training reference
 
 Complete command and parameter documentation is indexed in
 [`docs/scripts/README.md`](docs/scripts/README.md).
@@ -198,13 +264,13 @@ Notebooks:
   `saillab/alpaca-nepali-cleaned` or pipeline-cleaned translated-LIMA QLoRA
   instruction tuning for `meta-llama/Llama-2-7b-chat-hf`
 
-### Interactive dataset explorer
+## Path 1 detailed guide — Dataset exploration application
 
 Inspect raw, cleaned, processed, or tokenized Parquet records without loading a
 whole dataset into memory:
 
 ```bash
-streamlit run apps/dataset_explorer.py
+.venv/bin/python -m streamlit run apps/dataset_explorer.py
 ```
 
 Install `requirements.txt` in that same Python environment first.
@@ -217,13 +283,19 @@ and manifest information, draws uniform random records with a full-text view,
 creates configurable Unicode-aware word clouds, and runs bounded EDA from the
 **Survey EDA** tab. The EDA view provides live progress, detailed metric tables,
 document-size and structure distributions, 2/3/4-grams, term co-occurrence
-networks, and downloadable CSV/JSON evidence. Pipeline selection is limited to
-raw, cleaned, preprocessed, and tokenized data. Nepali clouds use NFC/BOM-safe
+networks, and downloadable CSV/JSON evidence. The adjacent **EDA & cleaning
+notes** tab documents metric interpretation, existing duplicate screening, and
+the planned auditable cleaning/deduplication workflow. Provider/lineage and
+purpose filters keep publisher, upstream source, adaptation, and training use
+independent; uncertain entries remain explicitly unclassified. Pipeline
+selection is limited to raw, cleaned, preprocessed, and tokenized data. Nepali clouds use NFC/BOM-safe
 stopword matching, conservative attached-postposition stripping, Devanagari-only
 glyph input, and a verified Noto/Lohit-compatible font. Both Streamlit and the
-CLI load the canonical list from `configs/eda/stopwords.txt`. Original-English
-and Gemini/Gemma-translated Nepali LIMA views appear directly in the dataset
-dropdown. Use the custom-path option for a Parquet file or directory elsewhere.
+CLI load the canonical list from `configs/eda/stopwords.txt`. The ordinary
+catalog is separated from the **Synthetic data generation** workspace. That
+workspace currently exposes the LIMA translation family and its generated
+Nepali and original-English variants through a reusable pipeline card. Use the
+custom-path option for a Parquet file or directory elsewhere.
 The dataset dropdown also includes the remote
 `himalaya-ai/nepali-sft-dataset`. Its 3.8 GB training split is never downloaded
 as one in-memory object: schema metrics come from streaming metadata, while
@@ -298,15 +370,20 @@ ROUGE-1/2/L. The existing Evaluation tab supplies FLORES English-to-Nepali
 translation with chrF++. Published NLUE scores remain visible where available;
 GMET stays manual-review-only because its public data has no gold-answer column.
 
-### Synthetic dataset generator
+## Path 2 detailed guide — Synthetic dataset generation application
 
 Generate bounded, structured training-data batches from the same local,
 Hugging Face, and Kaggle sources exposed by the dataset explorer:
 
 ```bash
 cp .env.example .env
-python -m streamlit run apps/dataset_generator.py
+.venv/bin/python -m streamlit run apps/dataset_generator.py
 ```
+
+Choose **Dataset catalog** for ordinary source corpora or **Synthetic data
+generation** for registry-managed pipeline families and variants. Both this app
+and the explorer use the same synthetic-family registry, so a newly registered
+family appears consistently in both places.
 
 Add only the provider credentials you intend to use to `.env`. The app does
 not make a request until **Generate dataset** is pressed, shows the request
@@ -331,6 +408,12 @@ output schema. Failed provider calls remain visible as diagnostics but are not
 included in training-data downloads. Run metadata and records are persisted in
 the ignored `.dataset_generator.sqlite3` database so successful records from a
 previous run can be downloaded after restarting the app.
+
+## Historical pretraining reference
+
+The following commands document earlier decoder-pretraining experiments. Keep
+them for reproducibility, but do not treat them as the current project phase or
+as a completed attention study.
 
 ### Nepali PDF corpus
 
@@ -433,7 +516,13 @@ The portable `{mask}` placeholder is also accepted, and `--json` returns
 machine-readable output. The first run downloads roughly 534 MB of model files
 from Hugging Face.
 
-## Visualize attention
+## Path 3 roadmap — Model building and attention visualization
+
+**Status: planned after dataset research.** There is not yet a complete
+attention-visualization Streamlit application or a finished comparative
+attention study. The existing CLI below is a prototype retained from earlier
+pretraining work and can be used to validate old or future compatible
+checkpoints.
 
 After training, checkpoints are saved under `runs/<run-name>/checkpoints/`.
 
@@ -448,7 +537,7 @@ python -m attention_maps.visualization \
   --run-name sentence_01
 ```
 
-This saves a heatmap under `artifacts/`. See
+This prototype saves a heatmap under `artifacts/`. See
 [`docs/attention-visualization.md`](docs/attention-visualization.md) for the
 reusable plotting API and complete examples.
 
@@ -477,15 +566,20 @@ sampled, and generation-attention inspection.
 - For `softmax` and `cosine`, full attention maps are directly available.
 - For `linear`, the script produces an approximate token-token influence map by replaying prefix computations.
 
-## Good first experiments
+## Future attention research plan
 
-1. Train all three attention variants for 1–3 epochs.
-2. Compare validation loss.
-3. Visualize the same sentence with each checkpoint.
-4. Increase sequence length and see which variant degrades less in runtime.
-5. Reduce model size and check whether the qualitative patterns remain stable.
+1. Complete the dataset survey and freeze versioned train/validation/test data.
+2. Define attention research questions, controls, metrics, and comparison sets.
+3. Train comparable model checkpoints with fixed data and tokenizer versions.
+4. Validate attention capture across layers, heads, prompt tokens, and generated
+   tokens.
+5. Compare attention variants using validation quality, runtime, memory, and
+   carefully scoped qualitative analysis.
+6. Build an interactive visualization application for inspecting trained models.
+7. Record limitations: attention weights or influence approximations are not,
+   by themselves, causal explanations of model behavior.
 
-## Suggested laptop-safe starting point
+### Historical laptop-safe starting point
 
 - embedding dim: 128
 - heads: 4

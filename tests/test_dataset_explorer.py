@@ -5,8 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from apps.dataset_explorer import (
+from attention_maps.explorer import (
     aya_nepali_dataset_specs,
+    available_dataset_purposes,
     configured_finetuned_models_root,
     configured_eda_output_root,
     configured_nepali_stopwords,
@@ -14,9 +15,11 @@ from apps.dataset_explorer import (
     custom_dataset,
     discover_datasets,
     eda_dataset_spec,
+    filter_dataset_specs,
     find_manifest,
     format_bytes,
     himalaya_nepali_sft_dataset,
+    himalaya_ai_dataset_specs,
     extract_text,
     find_devanagari_font,
     font_supports_devanagari,
@@ -25,7 +28,9 @@ from apps.dataset_explorer import (
     iriis_nepali_text_corpus_specs,
     kaggle_dataset_specs,
     lima_original_dataset,
+    lima_synthetic_dataset_specs,
     lima_translation_dataset,
+    load_eda_cleaning_notes,
     parse_model_ids,
     parse_number_list,
     parse_eda_terms,
@@ -42,9 +47,90 @@ from apps.dataset_explorer import (
     unicode_words,
     word_frequencies,
 )
+from attention_maps.generation import synthetic_dataset_families
 
 
 class DatasetDiscoveryTests(unittest.TestCase):
+    def test_registers_lima_as_an_extensible_synthetic_dataset_family(self):
+        families = synthetic_dataset_families()
+
+        self.assertEqual([family.key for family in families], ["lima-translation"])
+        self.assertEqual(families[0].label, "LIMA translation")
+        self.assertEqual(
+            [variant.label for variant in families[0].variants],
+            [
+                "LIMA · Translated Nepali (Gemini/Gemma)",
+                "LIMA · Original English",
+            ],
+        )
+
+    def test_lists_only_purposes_available_for_selected_provider(self):
+        specs = [
+            *himalaya_ai_dataset_specs(),
+            *iriis_nepali_text_corpus_specs(),
+        ]
+
+        self.assertEqual(
+            available_dataset_purposes(specs, provider="IRIIS Research"),
+            ("All purposes", "Pretraining corpus"),
+        )
+        himalaya_purposes = available_dataset_purposes(
+            specs,
+            provider="Himalaya AI",
+        )
+        self.assertIn("Instruction fine-tuning", himalaya_purposes)
+        self.assertIn("Evaluation / benchmark", himalaya_purposes)
+        self.assertNotIn("Preference tuning", himalaya_purposes)
+
+    def test_catalogs_himalaya_datasets_by_independent_purpose(self):
+        specs = himalaya_ai_dataset_specs()
+
+        self.assertEqual(len(specs), 17)
+        self.assertTrue(all(spec.provider == "Himalaya AI" for spec in specs))
+        purposes = {spec.primary_purpose for spec in specs}
+        self.assertIn("Pretraining corpus", purposes)
+        self.assertIn("Instruction fine-tuning", purposes)
+        self.assertIn("Tokenizer development", purposes)
+        self.assertIn("Evaluation / benchmark", purposes)
+        instruction_specs = filter_dataset_specs(
+            specs,
+            provider="Himalaya AI",
+            purpose="Instruction fine-tuning",
+        )
+        self.assertGreaterEqual(len(instruction_specs), 6)
+        self.assertTrue(
+            all(
+                spec.primary_purpose == "Instruction fine-tuning"
+                for spec in instruction_specs
+            )
+        )
+
+    def test_tracks_dataset_provider_source_and_adapter_independently(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "lima.json"
+            path.write_text("[]", encoding="utf-8")
+            translated = lima_translation_dataset(path)
+
+        self.assertIsNotNone(translated)
+        self.assertEqual(translated.provider, "Local project")
+        self.assertEqual(translated.source_provider, "GAIR / LIMA")
+        self.assertIn("Google (Gemini / Gemma)", translated.adapted_by)
+        self.assertEqual(
+            filter_dataset_specs(
+                [translated],
+                provider="Google (Gemini / Gemma)",
+            ),
+            [translated],
+        )
+
+    def test_loads_version_controlled_eda_cleaning_notes(self):
+        notes = load_eda_cleaning_notes()
+
+        self.assertIn("## Core EDA logic", notes)
+        self.assertIn("## Planned cleaning and deduplication pipeline", notes)
+        self.assertIn("SimHash", notes)
+        self.assertIn("quarantine", notes)
+
     def test_uses_repository_nepali_stopword_resource(self):
         stopwords = configured_nepali_stopwords()
 
@@ -211,8 +297,16 @@ class DatasetDiscoveryTests(unittest.TestCase):
 
             original = lima_original_dataset(path)
             translated = lima_translation_dataset(path)
+            synthetic_artifacts = lima_synthetic_dataset_specs(path)
             self.assertIsNotNone(original)
             self.assertIsNotNone(translated)
+            self.assertEqual(
+                [artifact.label for artifact in synthetic_artifacts],
+                [
+                    "LIMA · Translated Nepali (Gemini/Gemma)",
+                    "LIMA · Original English",
+                ],
+            )
             self.assertEqual(original.label, "LIMA · Original English")
             self.assertEqual(
                 translated.label, "LIMA · Translated Nepali (Gemini/Gemma)"
@@ -606,6 +700,19 @@ class DatasetExplorerAppTests(unittest.TestCase):
             if item.label == "Decoder models to benchmark"
         )
         self.assertTrue(any(tab.label == "Survey EDA" for tab in app.tabs))
+        self.assertTrue(any(tab.label == "EDA & cleaning notes" for tab in app.tabs))
+        provider_selector = next(
+            item for item in app.selectbox if item.label == "Provider / lineage"
+        )
+        self.assertIn("Himalaya AI", provider_selector.options)
+        self.assertIn("Arkios", provider_selector.options)
+        self.assertIn("Google (Gemini / Gemma)", provider_selector.options)
+        purpose_selector = next(
+            item for item in app.selectbox if item.label == "Dataset purpose"
+        )
+        self.assertIn("Pretraining corpus", purpose_selector.options)
+        self.assertIn("Instruction fine-tuning", purpose_selector.options)
+        self.assertNotIn("Preference tuning", purpose_selector.options)
         self.assertTrue(
             any(button.label == "Run EDA for this dataset" for button in app.button)
         )
@@ -624,6 +731,42 @@ class DatasetExplorerAppTests(unittest.TestCase):
         self.assertIn(
             "IRIIS GPT-2 Nepali 124M Base · Hugging Face local",
             model_selector.options,
+        )
+
+        provider_selector.set_value("Arkios").run(timeout=30)
+        filtered_purpose_selector = next(
+            item for item in app.selectbox if item.label == "Dataset purpose"
+        )
+        self.assertEqual(filtered_purpose_selector.options, ["All purposes"])
+
+        workspace_selector = next(
+            item for item in app.radio if item.label == "Dataset workspace"
+        )
+        workspace_selector.set_value("Synthetic data generation").run(
+            timeout=30
+        )
+        family_selector = next(
+            item
+            for item in app.selectbox
+            if item.label == "Synthetic dataset family"
+        )
+        self.assertEqual(family_selector.options, ["LIMA translation"])
+        lima_selector = next(
+            item for item in app.selectbox if item.label == "Dataset variant"
+        )
+        self.assertEqual(
+            lima_selector.options,
+            [
+                "LIMA · Translated Nepali (Gemini/Gemma)",
+                "LIMA · Original English",
+            ],
+        )
+        self.assertTrue(
+            any(
+                item.value
+                == "2 materialized variant(s) detected for LIMA translation"
+                for item in app.success
+            )
         )
 
     def test_evaluation_dropdown_includes_google_gemma_api(self):

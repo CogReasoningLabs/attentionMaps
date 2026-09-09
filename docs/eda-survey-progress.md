@@ -49,6 +49,20 @@ direct copy.
   Devanagari font glyph coverage for cleaned WordCloud input.
 - [x] Move the shared Nepali stopword list to `configs/eda/stopwords.txt` and
   load it consistently from both CLI survey configs and Streamlit.
+- [x] Add an in-app EDA and cleaning notes tab documenting current metrics,
+  duplicate screening, the planned auditable cleaning flow, and open decisions.
+- [x] Add independent provider, source/adaptation lineage, purpose hierarchy,
+  and tags to the dataset explorer; classify the 17 known Himalaya AI datasets.
+- [x] Make dataset-purpose choices dependent on the selected provider/lineage,
+  exposing only purpose mappings that exist in the human-curated catalog.
+- [x] Add a reusable synthetic-dataset family/variant registry and pipeline card
+  shared by both apps; register LIMA original/translated as the first family.
+- [x] Split the 5,044-line explorer into reusable domain modules and
+  feature-oriented Streamlit renderers; enforce a 1,000-line source-module cap.
+- [x] Split the 1,119-line generator into reusable generation services and keep
+  both Streamlit composition roots below the enforced module-size cap.
+- [x] Align the README and architecture notes around the three project paths:
+  dataset exploration, synthetic generation, and planned model/attention work.
 
 ## In progress
 
@@ -56,6 +70,8 @@ direct copy.
   streamed slice and pin repository revisions for the final survey run.
 - [ ] Decide which corpora belong in pretraining, SFT, evaluation, or mixed
   survey strata before interpreting a single combined ranking.
+- [ ] Implement the documented cleaning/deduplication materialization pipeline;
+  the current Survey EDA duplicate metrics remain read-only screening evidence.
 
 ## Next work
 
@@ -68,6 +84,8 @@ direct copy.
   sample estimates as exact population values.
 - [ ] Add a cross-dataset Streamlit queue for launching and comparing several
   selected corpora in one unattended survey run.
+- [ ] Register additional synthetic dataset families only after their source,
+  transformation, output schema, purpose, and provenance rules are reviewed.
 
 ## Runbook
 

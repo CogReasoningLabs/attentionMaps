@@ -7,17 +7,18 @@ Run with:
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import os
 import sqlite3
 import time
-import unicodedata
-import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+from apps.components import (
+    DATASET_CATALOG_AREA,
+    SYNTHETIC_DATA_AREA,
+    render_synthetic_dataset_card,
+)
 from attention_maps.inference.comparison import (
     ComparisonConfigurationError,
     DEFAULT_GEMINI_FLASH_LITE_MODEL,
@@ -47,12 +48,12 @@ from attention_maps.inference.local_comparison import (
     load_local_model_pair,
     local_model_context_limit,
 )
-from scripts.utils.nepali_text import (
-    CleaningConfig,
-    clean_text_with_result,
-    normalize_whitespace,
+from attention_maps.datasets.kaggle import (
+    inspect_kaggle_text,
+    inspect_kaggle_workbook,
 )
-from apps.dataset_explorer import (
+from scripts.utils.nepali_text import CleaningConfig
+from attention_maps.explorer import (
     DEFAULT_DATA_ROOT,
     GEMMA4_BASE_BACKEND_NAME,
     GOOGLE_GEMMA_BACKEND_NAME,
@@ -67,12 +68,8 @@ from apps.dataset_explorer import (
     himalaya_nepali_sft_dataset,
     inspect_dataset,
     inspect_huggingface_dataset,
-    inspect_kaggle_text,
-    inspect_kaggle_workbook,
     iriis_nepali_text_corpus_specs,
     kaggle_dataset_specs,
-    lima_original_dataset,
-    lima_translation_dataset,
     parse_number_list,
     sample_dataset_rows,
     secret_fingerprint,
@@ -80,274 +77,20 @@ from apps.dataset_explorer import (
 )
 
 
-def _prepare_source(text: str, cleaning: CleaningConfig | None) -> str:
-    """Reuse the project's canonical Nepali cleaner when it is enabled."""
-
-    if _contains_corrupted_text(text):
-        return ""
-    if cleaning is None:
-        return normalize_whitespace(text)
-    result = clean_text_with_result(text, cleaning)
-    return result.text if result.accepted else ""
-
-
-def _contains_corrupted_text(text: str) -> bool:
-    """Identify replacement glyphs and binary control bytes masquerading as text."""
-
-    allowed_controls = {"\n", "\t", "\u200c", "\u200d"}
-    return "\ufffd" in text or any(
-        unicodedata.category(character).startswith("C")
-        and character not in allowed_controls
-        for character in text
-    )
-
-
-def _parse_output_schema(value: str) -> dict[str, str]:
-    """Parse a flat output-record schema whose values are format templates."""
-
-    try:
-        schema = json.loads(value)
-    except json.JSONDecodeError as error:
-        raise ComparisonConfigurationError(f"output schema must be valid JSON: {error}") from error
-    if not isinstance(schema, dict) or not schema:
-        raise ComparisonConfigurationError("output schema must be a non-empty JSON object")
-    if not all(
-        isinstance(key, str)
-        and key.strip()
-        and isinstance(template, str)
-        and template.strip()
-        for key, template in schema.items()
-    ):
-        raise ComparisonConfigurationError(
-            "each output-schema field and its template must be a non-empty string"
-        )
-    return schema
-
-
-def _dataset_records_for_export(
-    generated_rows: list[dict[str, Any]],
-) -> list[dict[str, str]]:
-    """Return only successful user-schema records from internal result rows."""
-
-    return [
-        dict(row["_dataset_record"])
-        for row in generated_rows
-        if row.get("_status") == "ok"
-        and isinstance(row.get("_dataset_record"), dict)
-    ]
-
-
-def _records_jsonl(records: list[dict[str, str]]) -> str:
-    """Serialize public dataset records without internal generation metadata."""
-
-    if not records:
-        return ""
-    return "\n".join(json.dumps(row, ensure_ascii=False) for row in records) + "\n"
-
-
-def _records_csv(records: list[dict[str, str]]) -> str:
-    """Serialize records to CSV while preserving schema field order."""
-
-    if not records:
-        return ""
-    fieldnames = list(dict.fromkeys(field for record in records for field in record))
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(records)
-    return buffer.getvalue()
-
-
-def _result_preview_rows(
-    generated_rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Build a readable UI table while retaining provider diagnostics."""
-
-    return [
-        {
-            **dict(row.get("_dataset_record", {})),
-            "status": row.get("_status", ""),
-            "error": row.get("_error", ""),
-            "latency_seconds": row.get("_latency_seconds", 0.0),
-        }
-        for row in generated_rows
-    ]
-
-
-def _record_from_schema(
-    schema: dict[str, str], *, source: str, output: str, prompt: str,
-    system_prompt: str, model: str, decoding: str, row_index: object,
-) -> dict[str, str]:
-    values = {
-        "source": source, "output": output, "prompt": prompt,
-        "system_prompt": system_prompt, "model": model,
-        "decoding": decoding, "row_index": str(row_index),
-    }
-    try:
-        return {field: template.format(**values) for field, template in schema.items()}
-    except (KeyError, ValueError) as error:
-        raise ComparisonConfigurationError(
-            f"invalid output-schema placeholder: {error}. Use source, output, prompt, "
-            "system_prompt, model, decoding, or row_index."
-        ) from error
-
-
-class _GenerationRateLedger:
-    """A tiny persistent request ledger; provider limits are never modified."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        with sqlite3.connect(self.path) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS requests (scope TEXT, created REAL)"
-            )
-
-    def reset(self) -> None:
-        with sqlite3.connect(self.path) as connection:
-            connection.execute("DELETE FROM requests")
-
-    def usage(self, scope: str, now: float | None = None) -> tuple[int, int]:
-        now = now or time.time()
-        with sqlite3.connect(self.path) as connection:
-            minute = connection.execute(
-                "SELECT COUNT(*) FROM requests WHERE scope = ? AND created > ?",
-                (scope, now - 60),
-            ).fetchone()[0]
-            day = connection.execute(
-                "SELECT COUNT(*) FROM requests WHERE scope = ? AND created > ?",
-                (scope, now - 86_400),
-            ).fetchone()[0]
-        return int(minute), int(day)
-
-    def wait_and_record(
-        self,
-        scope: str,
-        per_minute: int,
-        per_day: int,
-        on_wait: Callable[[float], None] | None = None,
-    ) -> None:
-        """Block until a locally configured slot is available, then reserve it."""
-
-        while True:
-            now = time.time()
-            with sqlite3.connect(self.path) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                minute_rows = connection.execute(
-                    "SELECT created FROM requests WHERE scope = ? AND created > ? ORDER BY created",
-                    (scope, now - 60),
-                ).fetchall()
-                day_rows = connection.execute(
-                    "SELECT created FROM requests WHERE scope = ? AND created > ? ORDER BY created",
-                    (scope, now - 86_400),
-                ).fetchall()
-                if len(day_rows) >= per_day:
-                    raise ComparisonConfigurationError(
-                        f"local daily request limit reached for {scope}; reset the "
-                        "local counter only if that is intentional"
-                    )
-                if len(minute_rows) < per_minute:
-                    connection.execute("INSERT INTO requests VALUES (?, ?)", (scope, now))
-                    return
-                waits = []
-                if len(minute_rows) >= per_minute:
-                    waits.append(minute_rows[0][0] + 60 - now)
-            wait_seconds = max(0.1, min(waits) if waits else 0.1)
-            if on_wait is not None:
-                on_wait(wait_seconds)
-            time.sleep(wait_seconds)
-
-
-class _GenerationStore:
-    """Persistent local archive of generator runs and every generated record."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        with sqlite3.connect(self.path) as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS generator_runs (
-                    run_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    dataset_label TEXT NOT NULL,
-                    source_column TEXT,
-                    task_preset TEXT NOT NULL,
-                    system_prompt TEXT NOT NULL,
-                    user_prompt TEXT NOT NULL,
-                    output_schema_json TEXT NOT NULL,
-                    hyperparameters_json TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS generated_records (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL REFERENCES generator_runs(run_id),
-                    source_row_index TEXT,
-                    source_text TEXT NOT NULL,
-                    rendered_prompt TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    decoding TEXT NOT NULL,
-                    generated_output TEXT NOT NULL,
-                    record_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error TEXT NOT NULL,
-                    latency_seconds REAL NOT NULL
-                );
-                """
-            )
-
-    def save_run(self, metadata: dict[str, Any], rows: list[dict[str, Any]]) -> str:
-        run_id = uuid.uuid4().hex
-        with sqlite3.connect(self.path) as connection:
-            connection.execute(
-                """INSERT INTO generator_runs VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    run_id,
-                    metadata["dataset_label"], metadata["source_column"],
-                    metadata["task_preset"], metadata["system_prompt"],
-                    metadata["user_prompt"], json.dumps(metadata["output_schema"], ensure_ascii=False),
-                    json.dumps(metadata["hyperparameters"], ensure_ascii=False),
-                ),
-            )
-            connection.executemany(
-                """INSERT INTO generated_records (
-                    run_id, source_row_index, source_text, rendered_prompt, model,
-                    decoding, generated_output, record_json, status, error, latency_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        run_id, str(row.get("_source_row_index", "")), row["_source_text"],
-                        row["_rendered_prompt"], row["_model"], row["_decoding"],
-                        row["_generated_output"], json.dumps(row["_dataset_record"], ensure_ascii=False),
-                        row["_status"], row["_error"], row["_latency_seconds"],
-                    )
-                    for row in rows
-                ],
-            )
-        return run_id
-
-    def recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.path) as connection:
-            connection.row_factory = sqlite3.Row
-            return [dict(row) for row in connection.execute(
-                """SELECT run_id, created_at, dataset_label, task_preset,
-                   (SELECT COUNT(*) FROM generated_records WHERE run_id = generator_runs.run_id) AS records
-                   FROM generator_runs ORDER BY created_at DESC LIMIT ?""",
-                (limit,),
-            )]
-
-    def records_for_run(
-        self, run_id: str, *, successful_only: bool = True
-    ) -> list[dict[str, str]]:
-        """Load public dataset records for a persisted generation run."""
-
-        query = "SELECT record_json FROM generated_records WHERE run_id = ?"
-        parameters: list[object] = [run_id]
-        if successful_only:
-            query += " AND status = ?"
-            parameters.append("ok")
-        query += " ORDER BY id"
-        with sqlite3.connect(self.path) as connection:
-            rows = connection.execute(query, parameters).fetchall()
-        records = [json.loads(row[0]) for row in rows]
-        return [record for record in records if isinstance(record, dict)]
+from attention_maps.generation.persistence import (
+    GenerationRateLedger as _GenerationRateLedger,
+    GenerationStore as _GenerationStore,
+)
+from attention_maps.generation.records import (
+    contains_corrupted_text as _contains_corrupted_text,
+    dataset_records_for_export as _dataset_records_for_export,
+    parse_output_schema as _parse_output_schema,
+    prepare_source as _prepare_source,
+    record_from_schema as _record_from_schema,
+    records_csv as _records_csv,
+    records_jsonl as _records_jsonl,
+    result_preview_rows as _result_preview_rows,
+)
 
 
 def run_generator_app() -> None:
@@ -494,7 +237,6 @@ def run_generator_app() -> None:
         return inspect_kaggle_text(dataset_id, dataset_file)
 
     specs = discover_datasets(DEFAULT_DATA_ROOT)
-    specs.extend(item for item in (lima_translation_dataset(), lima_original_dataset()) if item)
     specs.extend([himalaya_nepali_sft_dataset(), *aya_nepali_dataset_specs(), *iriis_nepali_text_corpus_specs(), *kaggle_dataset_specs()])
     source_mode = st.radio(
         "Prompt source", ("Dataset batch", "Single dataset record", "Custom text"), horizontal=True,
@@ -541,16 +283,31 @@ def run_generator_app() -> None:
             "normalization": cleaning_config.normalization,
         }
     if source_mode != "Custom text":
-        path_text = st.text_input("Optional local Parquet file or directory", "")
-        if path_text.strip():
-            custom = custom_dataset(Path(path_text))
-            if custom:
-                specs = [custom]
-            else:
-                st.error("No Parquet files found at that path.")
-        spec_by_label = {f"{item.label} ({item.stage})": item for item in specs}
-        selected_spec = st.selectbox("Dataset", list(spec_by_label))
-        spec = spec_by_label[selected_spec]
+        dataset_collection = st.radio(
+            "Dataset collection",
+            (DATASET_CATALOG_AREA, SYNTHETIC_DATA_AREA),
+            horizontal=True,
+            help=(
+                "LIMA translations are pipeline artifacts, so they are kept "
+                "separate from the ordinary dataset catalog."
+            ),
+        )
+        if dataset_collection == SYNTHETIC_DATA_AREA:
+            spec = render_synthetic_dataset_card(st, key="generator-synthetic")
+            if spec is None:
+                st.stop()
+            selected_spec = f"{spec.label} ({spec.stage})"
+        else:
+            path_text = st.text_input("Optional local Parquet file or directory", "")
+            if path_text.strip():
+                custom = custom_dataset(Path(path_text))
+                if custom:
+                    specs = [custom]
+                else:
+                    st.error("No Parquet files found at that path.")
+            spec_by_label = {f"{item.label} ({item.stage})": item for item in specs}
+            selected_spec = st.selectbox("Dataset", list(spec_by_label))
+            spec = spec_by_label[selected_spec]
         dataset_label = selected_spec
         try:
             if spec.format in {"huggingface", "kaggle", "kaggle_text"}:
