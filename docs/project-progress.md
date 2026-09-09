@@ -1,11 +1,17 @@
 # Project progress
 
-> Active multi-dataset EDA work is tracked separately in
+> Active multi-dataset EDA work on `feature/multi-dataset-eda` is tracked in
 > [eda-survey-progress.md](eda-survey-progress.md).
 
-This document records the research and engineering work completed on the
-`feature/language-agnostic-phase-1` branch. Generated datasets, caches,
-checkpoints, and run artifacts are intentionally local and are not versioned.
+This document separates current research from earlier experimental foundations.
+Generated datasets, caches, checkpoints, and run artifacts are intentionally
+local and are not versioned.
+
+| Project path | Status | Current boundary |
+|---|---|---|
+| Dataset exploration | Active | catalog taxonomy, bounded inspection, survey EDA, and cleaning/deduplication design |
+| Synthetic dataset generation | Active foundation | shared family registry, live bounded generation, persistence, and exports; LIMA translation is the first family |
+| Model building and attention visualization | Planned next | earlier training, inference, and CLI visualization code is retained for reuse but is not a completed research program |
 
 ## Research direction
 
@@ -61,7 +67,7 @@ checkpoint, the same objective on the Nepali corpus is language- or
 domain-adaptive continual pretraining. SFT should begin only after the selected
 base checkpoint passes a fixed Nepali evaluation set.
 
-## Completed work
+## Implemented foundations
 
 | Area | Current state |
 |---|---|
@@ -69,14 +75,16 @@ base checkpoint passes a fixed Nepali evaluation set.
 | Cleaning | Shared Unicode, HTML, URL/email, control-character, whitespace, and Devanagari filtering utilities |
 | Canonical schema | Every cleaned source becomes sharded Parquet with stable document and provenance fields |
 | Dataset building | Deterministic source sampling, exact-text deduplication, and document-level train/validation/test splitting |
-| EDA | Individual PDF, news, and lyrics notebooks; comparative three-source notebook; final-split inspection notebook |
+| Dataset explorer | Provider/lineage and purpose taxonomy, dependent filters, local/remote inspection, complete-record views, bounded EDA, tokenizer/model comparison, and evaluation tabs |
+| Survey EDA | Incremental size/script/quality/provenance metrics, exact and approximate duplicate screening, n-grams, co-occurrence networks, evidence exports, and in-app methodology notes |
+| Synthetic generation | Registry-driven family/variant selection shared by both apps, live bounded generation, rate accounting, run persistence, and JSONL/CSV exports |
 | Tokenization | Tried an available third-party Hugging Face BPE tokenizer; also retained a separate custom-BPE experiment path |
 | Materialized training data | Document token IDs stored in Parquet and packed into fixed causal training blocks |
-| Decoder training | YAML-driven training, standard/cosine/linear attention, optional sparse MoE, checkpointing, and resume support |
-| Generation | Greedy or sampled continuation with completion-only output and reproducible seeds |
-| Attention analysis | Modular per-layer/per-head visualization for prompts and final generation context |
+| Historical decoder foundation | YAML-driven training, standard/cosine/linear attention, optional sparse MoE, checkpointing, and resume support |
+| Historical inference foundation | Greedy or sampled continuation with completion-only output and reproducible seeds |
+| Attention prototype | Command-line per-layer/per-head visualization for prompts and final generation context; comparative research and a Streamlit attention UI remain planned |
 | External diagnostics | NepBERTa fill-mask inference and Himalaya Gemma 4 PEFT generation are isolated from decoder training |
-| Packaging | Core logic moved into `attention_maps`; root scripts remain compatibility entry points |
+| Packaging | Core logic lives in cohesive `attention_maps` packages; Streamlit feature renderers and shared components are separated from domain services; a 1,000-line module cap is tested |
 | Tests | Data stages, tokenization, packed training data, configuration, inference, and visualization have focused unit coverage |
 
 ## Important design decisions
@@ -141,12 +149,19 @@ documentation, and notebooks. These local products are excluded by
 - Python, pytest, editor, and notebook caches;
 - secrets such as `.env` and access tokens.
 
-## Current checkpoint and roadmap
+## Current phase and roadmap
 
-The local decoder pipeline has been exercised through training, generation,
-and attention export. Early output is grammatical in places but repetitive and
-biased toward administrative notices, reflecting corpus composition and a
-short training run.
+The current phase is dataset research. Survey results are diagnostic and
+bounded unless the UI reports full population coverage. Cleaning and
+deduplication are documented but do not yet rewrite source datasets. Synthetic
+generation has a reusable application foundation, with LIMA translation as the
+first registered family.
+
+The local decoder pipeline was previously exercised through training,
+generation, and attention export. Early output was grammatical in places but
+repetitive and biased toward administrative notices, reflecting corpus
+composition and a short training run. This is historical evidence, not the
+baseline for the next controlled model study.
 
 The Himalaya Gemma loader now supports:
 
@@ -161,26 +176,29 @@ End-to-end Gemma generation still needs confirmation on the target GPU.
 
 The next implementation sequence is:
 
-1. establish a fixed Nepali base-model evaluation set and record held-out loss,
-   generation quality, tokenizer behavior, and source/domain bias;
-2. select the base checkpoint, then use the evaluation to decide whether CPT
-   is necessary before SFT;
-3. add a canonical chat/instruction dataset normalizer, SFT configuration, and
-   assistant-token loss masking without coupling them to Nepali;
-4. add preference schemas and evaluation only after the SFT data contract and
-   checkpoint lineage are stable;
-5. start with an offline preference method where appropriate, and add an online
-   RLHF loop only when its extra operational complexity serves a measured goal.
+1. validate every catalog schema/revision and complete the comparative dataset
+   survey;
+2. approve quality, provenance, license, and exact/near-duplicate policies,
+   then materialize auditable versioned datasets without changing raw inputs;
+3. expand the synthetic-family registry only for reviewed pipeline contracts
+   and freeze generated dataset versions with complete lineage;
+4. establish fixed Nepali evaluation sets and use them to choose a base model
+   and decide whether continual pretraining is needed before SFT;
+5. train comparable checkpoints against frozen data/tokenizer versions;
+6. validate attention extraction across layers, heads, prompts, and generation
+   steps before building the interactive attention visualization application;
+7. add preference schemas and alignment only after SFT contracts, evaluation,
+   and checkpoint lineage are stable.
 
-This sequencing keeps the current pretraining pipeline usable while making SFT
-the next development focus. Reward modeling and RLHF remain planned work, not
-current capabilities.
+Reward modeling, RLHF, and a complete attention research application remain
+planned work, not current capabilities.
 
 ## Related documentation
 
 - [Nepali pretraining workflow](nepali-pretraining-workflow.md)
 - [Model inference and attention](model-inference-and-attention.md)
 - [Code structure](code-structure.md)
+- [Modularization guardrails](modularization.md)
 - [Detailed script reference](scripts/README.md)
 - [Multi-dataset EDA survey progress](eda-survey-progress.md)
 - [Corpus survey EDA methodology](eda-survey-methodology.md)

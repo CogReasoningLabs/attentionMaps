@@ -1,5 +1,10 @@
 # Decoder generation inference
 
+> This page documents model-output inference from a decoder checkpoint. It is
+> distinct from the Streamlit synthetic dataset generation pipeline. The
+> decoder workflow is retained as an experimental foundation for the planned
+> model-building phase.
+
 Use the checkpoint with the lowest validation loss for inference:
 
 ```bash
