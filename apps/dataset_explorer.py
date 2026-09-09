@@ -1,4 +1,4 @@
-"""Interactive, read-only explorer for pretraining and finetuning datasets.
+"""Interactive explorer and survey EDA for pretraining and finetuning datasets.
 
 Run with:
 
@@ -28,6 +28,19 @@ from attention_maps.datasets.kaggle import (
     inspect_kaggle_workbook,
     sample_kaggle_text_rows,
     sample_kaggle_workbook_rows,
+)
+from attention_maps.eda.contracts import (
+    AnalysisConfig as EDAAnalysisConfig,
+    DatasetSpec as EDADatasetSpec,
+    SurveyPlan as EDASurveyPlan,
+    SurveyRun as EDASurveyRun,
+)
+from attention_maps.eda.pipeline import analyze_records as analyze_eda_records
+from attention_maps.eda.reporting import write_survey_report
+from attention_maps.eda.text import (
+    clean_devanagari_text,
+    load_stopwords_file,
+    strip_nepali_suffix,
 )
 from attention_maps.evaluation.flores import (
     FLORES_DATASET_ID,
@@ -113,6 +126,7 @@ from attention_maps.tokenization.analysis import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
 DEFAULT_FINETUNED_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
+DEFAULT_NEPALI_STOPWORDS_PATH = PROJECT_ROOT / "configs" / "eda" / "stopwords.txt"
 ARKIOS_BACKEND_NAME = "Arkios 1B Chat · local"
 HIMALAYAGPT_BACKEND_NAME = "HimalayaGPT 0.5B Instruct · local"
 GEMMA4_BASE_BACKEND_NAME = "Gemma 4 E2B Base · Hugging Face local"
@@ -131,6 +145,16 @@ KAGGLE_HATE_SPEECH_DATASET_ID = "mohanbhandari/nepali-hate-speech-collection"
 KAGGLE_OSCAR_NEPALI_DATASET_ID = "hsebarp/oscar-corpus-nepali"
 KAGGLE_OSCAR_DEDUP_FILE = "ne_dedup.txt"
 KAGGLE_OSCAR_DEDUP_APPROX_BYTES = 1_240_000_000
+DEFAULT_EDA_TERMS = (
+    "मन्त्रालय",
+    "लिलाम",
+    "सरकार",
+    "कार्यालय",
+    "विभाग",
+    "समिति",
+    "आयोग",
+    "पालिका",
+)
 
 
 def configured_finetuned_models_root() -> Path:
@@ -140,6 +164,25 @@ def configured_finetuned_models_root() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return DEFAULT_FINETUNED_MODELS_ROOT
+
+
+def configured_eda_output_root() -> Path:
+    """Resolve the derived-artifact directory used by Streamlit EDA runs."""
+
+    configured = os.getenv("ATTENTION_MAPS_EDA_OUTPUT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return PROJECT_ROOT / "artifacts" / "eda" / "ui"
+
+
+def configured_nepali_stopwords() -> tuple[str, ...]:
+    """Load the repository's canonical Nepali stopword resource."""
+
+    if DEFAULT_NEPALI_STOPWORDS_PATH.is_file():
+        return load_stopwords_file(DEFAULT_NEPALI_STOPWORDS_PATH)
+    return DEFAULT_WORDCLOUD_STOPWORDS
+
+
 SPLIT_NAMES = ("train", "validation", "test")
 PIPELINE_STAGES = ("raw", "cleaned", "processed", "tokenized")
 PIPELINE_STAGE_LABELS = {
@@ -199,6 +242,8 @@ DEFAULT_WORDCLOUD_STOPWORDS = (
     "पनि",
     "भएको",
     "भने",
+    "सम्बन्धी",
+    "सम्बन्धित",
     "मा",
     "र",
     "लाई",
@@ -242,6 +287,7 @@ DEVANAGARI_FONT_CANDIDATES = (
     Path("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf"),
     Path("/usr/share/fonts/truetype/noto/NotoSerifDevanagari-Regular.ttf"),
     Path("/usr/share/fonts/truetype/lohit-nepali/Lohit-Nepali.ttf"),
+    Path("/usr/share/fonts/truetype/msttcorefonts/Nirmala.ttf"),
     Path("/usr/share/fonts/truetype/freefont/FreeSans.ttf"),
 )
 LATIN_FONT_CANDIDATES = (
@@ -581,7 +627,11 @@ def inspect_parquet(
         if common_columns is None:
             common_columns = names
             first_schema = [
-                {"column": field.name, "type": str(field.type), "nullable": str(field.nullable)}
+                {
+                    "column": field.name,
+                    "type": str(field.type),
+                    "nullable": str(field.nullable),
+                }
                 for field in arrow_schema
             ]
         else:
@@ -660,7 +710,10 @@ def inspect_json(
                 "column": column,
                 "type": " | ".join(sorted(types)) if types else "null",
                 "nullable": str(
-                    any(column not in record or record.get(column) is None for record in records)
+                    any(
+                        column not in record or record.get(column) is None
+                        for record in records
+                    )
                 ),
             }
         )
@@ -761,11 +814,11 @@ def inspect_huggingface_dataset(
             {
                 "rows": filtered_rows,
                 "source_rows": source_rows,
-                "bytes": round(
-                    inventory["bytes"] * filtered_rows / source_rows
-                )
-                if source_rows
-                else 0,
+                "bytes": (
+                    round(inventory["bytes"] * filtered_rows / source_rows)
+                    if source_rows
+                    else 0
+                ),
                 "bytes_estimated": True,
                 "filter_column": filter_column,
                 "filter_value": filter_value,
@@ -894,8 +947,7 @@ def sample_huggingface_rows(
                 ):
                     continue
                 record = {
-                    column: source_record.get(column)
-                    for column in selected_columns
+                    column: source_record.get(column) for column in selected_columns
                 }
                 record[f"{VIEWER_PREFIX}row_index"] = index
                 record[f"{VIEWER_PREFIX}file"] = (
@@ -936,7 +988,9 @@ def sample_huggingface_rows(
             sampled.append(record)
         return sampled
     except Exception as error:
-        raise ValueError(f"Could not stream Hugging Face dataset rows: {error}") from error
+        raise ValueError(
+            f"Could not stream Hugging Face dataset rows: {error}"
+        ) from error
 
 
 def sample_dataset_rows(
@@ -953,9 +1007,7 @@ def sample_dataset_rows(
             inventory, sample_size, seed, columns, token=token
         )
     if inventory.get("format") == "kaggle":
-        return sample_kaggle_workbook_rows(
-            inventory, sample_size, seed, columns
-        )
+        return sample_kaggle_workbook_rows(inventory, sample_size, seed, columns)
     if inventory.get("format") == "kaggle_text":
         return sample_kaggle_text_rows(inventory, sample_size, seed, columns)
     if inventory.get("format") == "json":
@@ -1045,7 +1097,9 @@ def sentiment_prediction(text: str) -> str | None:
 
     if not isinstance(text, str):
         return None
-    match = re.search(r"(?<![a-z])(negative|neutral|positive)(?![a-z])", text.casefold())
+    match = re.search(
+        r"(?<![a-z])(negative|neutral|positive)(?![a-z])", text.casefold()
+    )
     return match.group(1) if match else None
 
 
@@ -1053,7 +1107,7 @@ def extract_text(value: Any) -> list[str]:
     """Extract text from strings or common nested chat/instruction values."""
 
     if isinstance(value, str):
-        return [value]
+        return [unicodedata.normalize("NFC", value).replace("\ufeff", "")]
     if isinstance(value, (list, tuple)):
         extracted: list[str] = []
         for item in value:
@@ -1129,11 +1183,46 @@ def unicode_words(text: str, *, include_numbers: bool = False) -> list[str]:
 def parse_stopwords(value: str) -> set[str]:
     """Parse editable comma/whitespace-separated stopwords."""
 
+    normalized = unicodedata.normalize("NFC", value).replace("\ufeff", " ")
     return {
         word
-        for chunk in value.replace(",", " ").split()
+        for chunk in normalized.replace(",", " ").split()
         for word in unicode_words(chunk, include_numbers=True)
     }
+
+
+def parse_eda_terms(value: str) -> tuple[str, ...]:
+    """Parse ordered, unique seed tokens for the co-occurrence network."""
+
+    return tuple(
+        dict.fromkeys(
+            word
+            for chunk in value.replace(",", " ").split()
+            for word in unicode_words(chunk, include_numbers=True)
+        )
+    )
+
+
+def eda_dataset_spec(
+    spec: DatasetSpec,
+    text_fields: Sequence[str],
+    source_fields: Sequence[str],
+    sample_size: int,
+) -> EDADatasetSpec:
+    """Convert a viewer dataset into the stable EDA pipeline contract."""
+
+    normalized_key = re.sub(r"[^A-Za-z0-9._-]+", "-", spec.key).strip("-.")
+    digest = hashlib.sha256(spec.key.encode("utf-8")).hexdigest()[:10]
+    key = f"{(normalized_key or 'dataset')[:50]}-{digest}"
+    return EDADatasetSpec(
+        key=key,
+        dataset_id=spec.dataset_id or f"local/{key}",
+        config_name=spec.dataset_config,
+        split=spec.dataset_split or "local",
+        text_columns=tuple(text_fields),
+        source_columns=tuple(source_fields),
+        sample_size=sample_size,
+    )
 
 
 def word_frequencies(
@@ -1144,32 +1233,60 @@ def word_frequencies(
     min_characters: int = 2,
     min_frequency: int = 1,
     include_numbers: bool = False,
+    devanagari_only: bool = False,
+    strip_nepali_suffixes: bool = False,
 ) -> Counter[str]:
     """Count Unicode words in selected columns of sampled dataset records."""
 
-    excluded = stopwords or set()
+    excluded = {
+        unicodedata.normalize("NFC", word).replace("\ufeff", "").strip().casefold()
+        for word in (stopwords or set())
+        if word.strip().replace("\ufeff", "")
+    }
     counts: Counter[str] = Counter()
     for record in records:
         for column in columns:
             for text in extract_text(record.get(column)):
-                counts.update(
-                    word
-                    for word in unicode_words(text, include_numbers=include_numbers)
-                    if len(word) >= min_characters and word not in excluded
-                )
+                prepared = clean_devanagari_text(text) if devanagari_only else text
+                for word in unicode_words(prepared, include_numbers=include_numbers):
+                    normalized_word = unicodedata.normalize("NFC", word).casefold()
+                    if normalized_word in excluded:
+                        continue
+                    if strip_nepali_suffixes:
+                        normalized_word = strip_nepali_suffix(normalized_word)
+                    if (
+                        len(normalized_word) >= min_characters
+                        and normalized_word not in excluded
+                    ):
+                        counts[normalized_word] += 1
     return Counter(
-        {
-            word: count
-            for word, count in counts.items()
-            if count >= min_frequency
-        }
+        {word: count for word, count in counts.items() if count >= min_frequency}
     )
 
 
 def find_devanagari_font() -> Path | None:
     """Return the first commonly installed font capable of rendering Nepali."""
 
-    return next((path for path in DEVANAGARI_FONT_CANDIDATES if path.is_file()), None)
+    return next(
+        (
+            path
+            for path in DEVANAGARI_FONT_CANDIDATES
+            if path.is_file() and font_supports_devanagari(path)
+        ),
+        None,
+    )
+
+
+def font_supports_devanagari(path: Path) -> bool:
+    """Verify that a font maps representative Nepali base and combining glyphs."""
+
+    try:
+        from matplotlib import ft2font
+
+        characters = ft2font.FT2Font(str(path)).get_charmap()
+    except (FileNotFoundError, OSError, RuntimeError, ValueError):
+        return False
+    return all(ord(character) in characters for character in "कसम्बन्धी")
 
 
 def find_latin_font() -> Path | None:
@@ -1228,7 +1345,9 @@ def parse_number_list(
 def parse_model_ids(value: str) -> list[str]:
     """Parse one model repository ID per line or comma."""
 
-    return [item.strip() for item in value.replace(",", "\n").splitlines() if item.strip()]
+    return [
+        item.strip() for item in value.replace(",", "\n").splitlines() if item.strip()
+    ]
 
 
 def secret_fingerprint(secret: str) -> str:
@@ -1333,7 +1452,9 @@ def render_full_record(st: Any, record: dict[str, Any]) -> None:
     chat_field = data_fields.get("messages", data_fields.get("conversations"))
     render_messages(st, chat_field)
     long_text_fields = tuple(
-        field for field in TEXT_FIELD_NAMES if field not in {"messages", "conversations"}
+        field
+        for field in TEXT_FIELD_NAMES
+        if field not in {"messages", "conversations"}
     )
     shown: set[str] = set()
     if "source_text" in data_fields and "translation" in data_fields:
@@ -1371,10 +1492,11 @@ def run_app() -> None:
     )
     st.title("Pretraining & Finetuning Dataset Explorer")
     st.caption(
-        "Read-only inspection of full Nepali records, schemas, manifests, and "
-        "uniform random samples, including paired English/Nepali translations. "
-        "Future English and finetuning Parquet data use the same viewer."
+        "Inspect full Nepali records, schemas, manifests, and uniform random "
+        "samples, then run bounded survey EDA with detailed metrics and plots. "
+        "Future English and finetuning Parquet data use the same workflow."
     )
+    nepali_stopwords = configured_nepali_stopwords()
 
     @st.cache_data(show_spinner=False)
     def cached_inventory(
@@ -1665,9 +1787,8 @@ def run_app() -> None:
         else spec.label
     )
     large_download_key = f"large-download-confirmed:{spec.key}"
-    if (
-        spec.format == "kaggle_text"
-        and not st.session_state.get(large_download_key, False)
+    if spec.format == "kaggle_text" and not st.session_state.get(
+        large_download_key, False
     ):
         st.subheader(heading)
         st.code(str(spec.location), language=None)
@@ -1759,6 +1880,7 @@ def run_app() -> None:
     (
         details_tab,
         sample_tab,
+        eda_tab,
         wordcloud_tab,
         tokenizer_tab,
         local_inference_tab,
@@ -1770,6 +1892,7 @@ def run_app() -> None:
         [
             "Schema",
             "Random records",
+            "Survey EDA",
             "Word cloud",
             "Tokenizer analysis",
             "Local base vs finetuned",
@@ -1829,15 +1952,17 @@ def run_app() -> None:
                 sampling_description = (
                     "Parquet predicate-filtered streaming sample"
                     if inventory.get("filter_column")
-                    else "Bounded streaming shuffle"
-                    if inventory["format"] == "huggingface"
                     else (
-                        "Memory-bounded uniform reservoir sample"
-                        if inventory["format"] == "kaggle"
+                        "Bounded streaming shuffle"
+                        if inventory["format"] == "huggingface"
                         else (
-                            "Random-offset streaming line sample"
-                            if inventory["format"] == "kaggle_text"
-                            else "Uniform random sample"
+                            "Memory-bounded uniform reservoir sample"
+                            if inventory["format"] == "kaggle"
+                            else (
+                                "Random-offset streaming line sample"
+                                if inventory["format"] == "kaggle_text"
+                                else "Uniform random sample"
+                            )
                         )
                     )
                 )
@@ -1859,6 +1984,354 @@ def run_app() -> None:
                     ),
                 )
                 render_full_record(st, records[record_index])
+
+    with eda_tab:
+        st.markdown("### Survey-ready exploratory data analysis")
+        st.caption(
+            "Run the shared bounded EDA pipeline on a deterministic sample of this "
+            "dataset. Raw records are used only during analysis; saved artifacts "
+            "contain aggregate metrics, bounded numeric samples, and top patterns."
+        )
+        eda_candidate_columns = text_columns(inventory["schema"])
+        if not eda_candidate_columns or int(inventory["rows"]) <= 0:
+            st.info("This dataset has no detectable text rows available for EDA.")
+        else:
+            eda_field_columns = st.columns([3, 2])
+            eda_text_fields = eda_field_columns[0].multiselect(
+                "Text fields to combine",
+                eda_candidate_columns,
+                default=eda_candidate_columns[:1],
+                key=f"eda-text-fields:{spec.key}",
+                help=(
+                    "Chat and instruction fields can be combined. Document-size "
+                    "metrics describe the combined text for each row."
+                ),
+            )
+            source_candidates = [
+                column
+                for column in inventory["columns"]
+                if column.casefold()
+                in {"source", "domain", "url", "link", "dataset", "source_id"}
+            ]
+            eda_source_fields = eda_field_columns[1].multiselect(
+                "Source / provenance fields",
+                inventory["columns"],
+                default=source_candidates[:1],
+                key=f"eda-source-fields:{spec.key}",
+            )
+
+            maximum_eda_rows = max(1, min(50_000, int(inventory["rows"])))
+            settings = st.columns(5)
+            eda_sample_size = settings[0].number_input(
+                "Sampled rows",
+                min_value=1,
+                max_value=maximum_eda_rows,
+                value=min(5_000, maximum_eda_rows),
+                step=1,
+                key=f"eda-sample-size:{spec.key}",
+            )
+            eda_seed = settings[1].number_input(
+                "EDA seed",
+                min_value=0,
+                value=42,
+                step=1,
+                key=f"eda-seed:{spec.key}",
+            )
+            eda_min_tokens = settings[2].number_input(
+                "Minimum words",
+                min_value=1,
+                max_value=1_000,
+                value=5,
+                step=1,
+                key=f"eda-min-tokens:{spec.key}",
+            )
+            eda_devanagari_ratio = settings[3].slider(
+                "Minimum Devanagari ratio",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.70,
+                step=0.05,
+                key=f"eda-devanagari-ratio:{spec.key}",
+            )
+            eda_top_patterns = settings[4].number_input(
+                "Top patterns",
+                min_value=5,
+                max_value=100,
+                value=25,
+                step=5,
+                key=f"eda-top-patterns:{spec.key}",
+            )
+
+            with st.expander("N-gram and co-occurrence settings"):
+                pattern_columns = st.columns([3, 1, 1])
+                eda_terms_text = pattern_columns[0].text_area(
+                    "Co-occurrence seed terms",
+                    value=", ".join(DEFAULT_EDA_TERMS),
+                    key=f"eda-terms:{spec.key}",
+                    help="Comma- or whitespace-separated token list.",
+                )
+                eda_window = pattern_columns[1].number_input(
+                    "Token window",
+                    min_value=1,
+                    max_value=50,
+                    value=6,
+                    step=1,
+                    key=f"eda-window:{spec.key}",
+                )
+                eda_pattern_cap = pattern_columns[2].number_input(
+                    "Tokens per document",
+                    min_value=100,
+                    max_value=50_000,
+                    value=5_000,
+                    step=100,
+                    key=f"eda-pattern-cap:{spec.key}",
+                )
+                eda_stopwords_text = st.text_area(
+                    "Co-occurrence stopwords",
+                    value=" ".join(nepali_stopwords),
+                    key=f"eda-stopwords:{spec.key}",
+                )
+
+            result_key = f"eda-result:{spec.key}"
+            if st.button(
+                "Run EDA for this dataset",
+                type="primary",
+                key=f"run-eda:{spec.key}",
+                disabled=not eda_text_fields,
+            ):
+                progress_bar = st.progress(0, text="Preparing EDA configuration…")
+                run_status = st.status("Running bounded dataset EDA…", expanded=True)
+                try:
+                    analysis_config = EDAAnalysisConfig(
+                        sample_size=int(eda_sample_size),
+                        seed=int(eda_seed),
+                        min_tokens=int(eda_min_tokens),
+                        min_devanagari_ratio=float(eda_devanagari_ratio),
+                        reservoir_size=min(10_000, max(100, int(eda_sample_size))),
+                        max_vocabulary=250_000,
+                        top_tokens=max(30, int(eda_top_patterns)),
+                        ngram_orders=(2, 3, 4),
+                        max_ngrams=150_000,
+                        top_ngrams=int(eda_top_patterns),
+                        max_pattern_tokens_per_document=int(eda_pattern_cap),
+                        cooccurrence_terms=parse_eda_terms(eda_terms_text),
+                        cooccurrence_window=int(eda_window),
+                        max_cooccurrence_edges=75_000,
+                        top_cooccurrence_edges=max(50, int(eda_top_patterns)),
+                        cooccurrence_stopwords=tuple(
+                            sorted(parse_stopwords(eda_stopwords_text))
+                        ),
+                    )
+                    analysis_spec = eda_dataset_spec(
+                        spec,
+                        eda_text_fields,
+                        eda_source_fields,
+                        int(eda_sample_size),
+                    )
+                    selected_fields = tuple(
+                        dict.fromkeys((*eda_text_fields, *eda_source_fields))
+                    )
+                    run_status.write(
+                        f"Sampling {int(eda_sample_size):,} rows with seed "
+                        f"{int(eda_seed)}…"
+                    )
+                    progress_bar.progress(10, text="Sampling dataset rows…")
+                    sampled_records = sample_dataset_rows(
+                        inventory,
+                        int(eda_sample_size),
+                        int(eda_seed),
+                        selected_fields,
+                    )
+                    run_status.write(
+                        f"Analyzing {len(sampled_records):,} sampled rows…"
+                    )
+
+                    def update_eda_progress(
+                        dataset_key: str, stage: str, completed: int
+                    ) -> None:
+                        del dataset_key, stage
+                        share = completed / max(1, len(sampled_records))
+                        progress_bar.progress(
+                            min(85, 25 + round(60 * share)),
+                            text=f"Analyzing row {completed:,}…",
+                        )
+
+                    profile = analyze_eda_records(
+                        analysis_spec,
+                        sampled_records,
+                        analysis_config,
+                        progress=update_eda_progress,
+                    )
+                    del sampled_records
+                    progress_bar.progress(88, text="Creating figures and CSV tables…")
+                    report_root = configured_eda_output_root()
+                    survey = EDASurveyRun(
+                        EDASurveyPlan(
+                            f"UI EDA · {spec.label}",
+                            (analysis_spec,),
+                            analysis_config,
+                        ),
+                        (profile,),
+                        {},
+                    )
+                    write_survey_report(survey, report_root, plots=True)
+                    dataset_output = report_root / analysis_spec.key
+                    st.session_state[result_key] = {
+                        "profile": profile,
+                        "output_dir": dataset_output,
+                        "text_fields": tuple(eda_text_fields),
+                        "analysis": analysis_config,
+                    }
+                    progress_bar.progress(100, text="EDA complete")
+                    run_status.update(
+                        label="EDA complete",
+                        state="complete",
+                        expanded=False,
+                    )
+                except (
+                    ImportError,
+                    OSError,
+                    RuntimeError,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    run_status.update(label="EDA failed", state="error", expanded=True)
+                    st.error(f"Could not complete dataset EDA: {error}")
+
+            eda_result = st.session_state.get(result_key)
+            if eda_result:
+                profile = eda_result["profile"]
+                output_dir = Path(eda_result["output_dir"])
+                summary = profile.summary
+                st.markdown("#### Dataset overview")
+                st.caption(
+                    f"Latest completed run · fields: "
+                    f"{', '.join(eda_result['text_fields'])} · "
+                    f"requested rows: {summary.sample_limit:,} · seed: {summary.seed}"
+                )
+                overview = st.columns(6)
+                overview[0].metric("Usable rows", f"{summary.usable_rows:,}")
+                overview[1].metric("Median words", f"{summary.median_tokens:,.1f}")
+                overview[2].metric(
+                    "Median sentence", f"{summary.median_sentence_tokens:,.1f} words"
+                )
+                overview[3].metric(
+                    "Median line", f"{summary.median_line_characters:,.1f} chars"
+                )
+                overview[4].metric(
+                    "Devanagari clean", f"{summary.devanagari_clean_ratio_pct:.1f}%"
+                )
+                overview[5].metric("Duplicates", f"{summary.duplicate_ratio_pct:.1f}%")
+                for warning in summary.warnings:
+                    st.warning(warning)
+
+                size_plot, structure_plot, ngram_plot, network_plot = st.tabs(
+                    [
+                        "Document size",
+                        "Sentence & line structure",
+                        "N-grams",
+                        "Co-occurrence network",
+                    ]
+                )
+                with size_plot:
+                    st.image(output_dir / "document_size_distribution.png")
+                with structure_plot:
+                    st.image(output_dir / "segment_length_kde.png")
+                with ngram_plot:
+                    st.image(output_dir / "top_ngrams.png")
+                with network_plot:
+                    st.image(output_dir / "term_cooccurrence_network.png")
+
+                st.markdown("#### Detailed metrics and evidence")
+                summary_table, pattern_table, edge_table, provenance_table = st.tabs(
+                    [
+                        "All metrics",
+                        "N-gram counts",
+                        "Network edges",
+                        "Tokens & sources",
+                    ]
+                )
+                with summary_table:
+                    st.dataframe(
+                        [
+                            {
+                                "metric": key,
+                                "value": (
+                                    json.dumps(value, ensure_ascii=False)
+                                    if isinstance(value, (dict, list, tuple))
+                                    else str(value)
+                                ),
+                            }
+                            for key, value in summary.as_dict().items()
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with pattern_table:
+                    st.dataframe(
+                        [
+                            {"order": order, "ngram": phrase, "count": count}
+                            for order, values in sorted(profile.top_ngrams.items())
+                            for phrase, count in values
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with edge_table:
+                    st.dataframe(
+                        [
+                            {
+                                "seed_term": source,
+                                "neighbor": target,
+                                "document_count": count,
+                            }
+                            for source, target, count in profile.cooccurrence_edges
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+                with provenance_table:
+                    token_column, source_column = st.columns(2)
+                    token_column.dataframe(
+                        [
+                            {"token": token, "count": count}
+                            for token, count in profile.top_tokens
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+                    source_column.dataframe(
+                        [
+                            {"source": source, "count": count}
+                            for source, count in profile.top_sources
+                        ],
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+                with st.expander("Download EDA artifacts"):
+                    st.caption(str(output_dir))
+                    for artifact in sorted(output_dir.glob("*.csv")):
+                        st.download_button(
+                            f"Download {artifact.name}",
+                            artifact.read_bytes(),
+                            file_name=artifact.name,
+                            mime="text/csv",
+                            key=f"download-eda:{spec.key}:{artifact.name}",
+                        )
+                    summary_path = output_dir / "eda_summary.json"
+                    if summary_path.is_file():
+                        st.download_button(
+                            "Download eda_summary.json",
+                            summary_path.read_bytes(),
+                            file_name=summary_path.name,
+                            mime="application/json",
+                            key=f"download-eda:{spec.key}:summary",
+                        )
+                st.info(
+                    "Use the adjacent Random records tab to inspect complete source "
+                    "rows behind the aggregate findings."
+                )
 
     with wordcloud_tab:
         candidate_columns = text_columns(inventory["schema"])
@@ -1931,7 +2404,7 @@ def run_app() -> None:
                 )
                 nepali_stopword_text = stopword_columns[1].text_area(
                     "Nepali-translation stopwords",
-                    ", ".join(DEFAULT_WORDCLOUD_STOPWORDS),
+                    ", ".join(nepali_stopwords),
                     height=100,
                 )
                 cloud_groups = (
@@ -1940,12 +2413,14 @@ def run_app() -> None:
                         ("source_text",),
                         english_stopword_text,
                         english_font_text,
+                        False,
                     ),
                     (
                         "Translation (Nepali)",
                         ("translation",),
                         nepali_stopword_text,
                         nepali_font_text,
+                        True,
                     ),
                 )
             else:
@@ -1967,12 +2442,18 @@ def run_app() -> None:
                     ", ".join(
                         ENGLISH_WORDCLOUD_STOPWORDS
                         if english_dataset
-                        else DEFAULT_WORDCLOUD_STOPWORDS
+                        else nepali_stopwords
                     ),
                     height=100,
                 )
                 cloud_groups = (
-                    ("Selected text", tuple(cloud_columns), stopword_text, font_text),
+                    (
+                        "Selected text",
+                        tuple(cloud_columns),
+                        stopword_text,
+                        font_text,
+                        not english_dataset,
+                    ),
                 )
 
             if not cloud_columns:
@@ -1980,13 +2461,28 @@ def run_app() -> None:
             elif st.button("Generate word cloud", type="primary"):
                 invalid_fonts = [
                     Path(group_font_text).expanduser()
-                    for _, _, _, group_font_text in cloud_groups
+                    for _, _, _, group_font_text, _ in cloud_groups
                     if group_font_text.strip()
                     and not Path(group_font_text).expanduser().is_file()
                 ]
                 if invalid_fonts:
                     st.error(f"Font file not found: {invalid_fonts[0]}")
                 else:
+                    incompatible_fonts = [
+                        Path(group_font_text).expanduser()
+                        for _, _, _, group_font_text, is_nepali in cloud_groups
+                        if is_nepali
+                        and group_font_text.strip()
+                        and not font_supports_devanagari(
+                            Path(group_font_text).expanduser()
+                        )
+                    ]
+                    if incompatible_fonts:
+                        st.error(
+                            "Font does not contain the required Devanagari glyphs: "
+                            f"{incompatible_fonts[0]}"
+                        )
+                        st.stop()
                     try:
                         with st.spinner("Sampling text and building word frequencies…"):
                             cloud_records = cached_sample(
@@ -2001,6 +2497,7 @@ def run_app() -> None:
                                 columns,
                                 group_stopwords,
                                 group_font_text,
+                                is_nepali,
                             ) in cloud_groups:
                                 frequencies = word_frequencies(
                                     cloud_records,
@@ -2009,6 +2506,8 @@ def run_app() -> None:
                                     min_characters=int(minimum_characters),
                                     min_frequency=int(minimum_frequency),
                                     include_numbers=include_numbers,
+                                    devanagari_only=is_nepali,
+                                    strip_nepali_suffixes=is_nepali,
                                 )
                                 cloud = create_wordcloud(
                                     frequencies,
@@ -2030,9 +2529,7 @@ def run_app() -> None:
                             output_columns, cloud_outputs
                         ):
                             output_column.markdown(f"#### {title}")
-                            output_column.image(
-                                cloud.to_array(), width="stretch"
-                            )
+                            output_column.image(cloud.to_array(), width="stretch")
                             output_column.caption(
                                 f"{len(frequencies):,} retained word types from "
                                 f"{len(cloud_records):,} sampled records."
@@ -2140,8 +2637,11 @@ def run_app() -> None:
                 preferred_tokenizer_column = (
                     "translation"
                     if "translation" in tokenizer_text_columns
-                    else "text" if "text" in tokenizer_text_columns
-                    else tokenizer_text_columns[0]
+                    else (
+                        "text"
+                        if "text" in tokenizer_text_columns
+                        else tokenizer_text_columns[0]
+                    )
                 )
                 tokenizer_text_column = sample_controls[0].selectbox(
                     "Dataset text column",
@@ -2198,9 +2698,7 @@ def run_app() -> None:
                         )[: int(tokenizer_maximum_characters)]
                     except (ImportError, OSError, ValueError) as error:
                         st.error(f"Could not load tokenizer sample text: {error}")
-                tokenizer_analysis_text = st.session_state.get(
-                    tokenizer_sample_key, ""
-                )
+                tokenizer_analysis_text = st.session_state.get(tokenizer_sample_key, "")
                 if tokenizer_analysis_text:
                     st.caption(
                         f"Loaded {len(tokenizer_analysis_text):,} characters from "
@@ -2209,7 +2707,9 @@ def run_app() -> None:
                     with st.expander("Dataset text sample preview"):
                         st.text(tokenizer_analysis_text[:5_000])
                 else:
-                    st.info("Load a bounded dataset sample before comparing tokenizers.")
+                    st.info(
+                        "Load a bounded dataset sample before comparing tokenizers."
+                    )
 
         selected_tokenizer_specs = [
             tokenizer_by_label[label] for label in selected_tokenizer_labels
@@ -2268,9 +2768,7 @@ def run_app() -> None:
         tokenizer_output = st.session_state.get(tokenizer_results_key)
         if tokenizer_output:
             for tokenizer_error in tokenizer_output["errors"]:
-                st.error(
-                    f"{tokenizer_error['tokenizer']}: {tokenizer_error['error']}"
-                )
+                st.error(f"{tokenizer_error['tokenizer']}: {tokenizer_error['error']}")
             tokenizer_analyses = tokenizer_output["analyses"]
             if tokenizer_analyses:
                 st.markdown("#### Side-by-side decision metrics")
@@ -2328,7 +2826,9 @@ def run_app() -> None:
                     x="tokenizer",
                     y="Devanagari vocabulary %",
                 )
-                chart_columns[1].markdown("##### Nepali fragmentation (lower is better)")
+                chart_columns[1].markdown(
+                    "##### Nepali fragmentation (lower is better)"
+                )
                 chart_columns[1].bar_chart(
                     summary_rows,
                     x="tokenizer",
@@ -2352,8 +2852,7 @@ def run_app() -> None:
                     f"**{vocabulary_leader.tokenizer}**"
                 )
                 leader_columns[1].success(
-                    "Lowest fragmentation  \n"
-                    f"**{efficiency_leader.tokenizer}**"
+                    "Lowest fragmentation  \n" f"**{efficiency_leader.tokenizer}**"
                 )
                 leader_columns[2].success(
                     "Single-token word leader  \n"
@@ -2377,19 +2876,13 @@ def run_app() -> None:
                         f"{detail_tokenizer.sample_tokens:,} sample tokens."
                     )
                 with st.expander("Devanagari vocabulary token examples"):
-                    vocabulary_example_columns = st.columns(
-                        len(tokenizer_analyses)
-                    )
+                    vocabulary_example_columns = st.columns(len(tokenizer_analyses))
                     for example_column, tokenizer_analysis in zip(
                         vocabulary_example_columns, tokenizer_analyses
                     ):
-                        example_column.markdown(
-                            f"**{tokenizer_analysis.tokenizer}**"
-                        )
+                        example_column.markdown(f"**{tokenizer_analysis.tokenizer}**")
                         example_column.code(
-                            "\n".join(
-                                tokenizer_analysis.devanagari_vocabulary_examples
-                            )
+                            "\n".join(tokenizer_analysis.devanagari_vocabulary_examples)
                             or "No Devanagari-bearing vocabulary tokens found.",
                             language=None,
                         )
@@ -2410,8 +2903,7 @@ def run_app() -> None:
         local_text_columns = text_columns(inventory["schema"])
         if not local_adapters:
             st.warning(
-                f"No complete PEFT adapters were found under "
-                f"`{local_models_root}`."
+                f"No complete PEFT adapters were found under " f"`{local_models_root}`."
             )
         elif not local_text_columns:
             st.warning(
@@ -2419,13 +2911,17 @@ def run_app() -> None:
                 "or use custom prompt text below."
             )
 
-        selected_adapter = st.selectbox(
-            "Local finetuned model",
-            local_adapters,
-            format_func=lambda item: item.label,
-            disabled=not local_adapters,
-            key="local-adapter",
-        ) if local_adapters else None
+        selected_adapter = (
+            st.selectbox(
+                "Local finetuned model",
+                local_adapters,
+                format_func=lambda item: item.label,
+                disabled=not local_adapters,
+                key="local-adapter",
+            )
+            if local_adapters
+            else None
+        )
         if selected_adapter is not None:
             st.caption(
                 f"Base: `{selected_adapter.base_model_id}` · Adapter: "
@@ -2501,8 +2997,8 @@ def run_app() -> None:
                     local_record = local_records[0]
                     source_parts = extract_text(local_record.get(local_source_column))
                     serialized_source = "\n\n".join(source_parts)
-                    local_source_text, embedded_reference = split_human_assistant_example(
-                        serialized_source
+                    local_source_text, embedded_reference = (
+                        split_human_assistant_example(serialized_source)
                     )
                     if local_reference_column == "Auto / none":
                         local_reference_text = embedded_reference
@@ -2672,9 +3168,7 @@ def run_app() -> None:
                 f"{local_files_only}"
             ).encode("utf-8")
         ).hexdigest()[:16]
-        local_results_key = (
-            f"local-inference-results:{spec.key}:{local_result_context}"
-        )
+        local_results_key = f"local-inference-results:{spec.key}:{local_result_context}"
         local_run_disabled = (
             selected_adapter is None
             or not local_prompt_preview
@@ -2728,9 +3222,7 @@ def run_app() -> None:
                 }
                 for result in local_results
             ]
-            st.dataframe(
-                local_summary_rows, width="stretch", hide_index=True
-            )
+            st.dataframe(local_summary_rows, width="stretch", hide_index=True)
             results_by_decoding: dict[str, dict[str, Any]] = defaultdict(dict)
             for result in local_results:
                 results_by_decoding[result.decoding][result.variant] = result
@@ -2838,9 +3330,7 @@ def run_app() -> None:
                         reference_sentiment_value = inference_record.get(
                             reference_sentiment_column
                         )
-                        reference_sentiment = sentiment_label(
-                            reference_sentiment_value
-                        )
+                        reference_sentiment = sentiment_label(reference_sentiment_value)
                     source_widget_context = (
                         f"{inference_column}:{int(inference_sample_seed)}:"
                         f"{int(maximum_prompt_chars)}"
@@ -2872,7 +3362,11 @@ def run_app() -> None:
         )
         system_prompt = st.text_area(
             "System prompt (optional)",
-            value=sentiment_system_prompt if task_preset == "Sentiment classification" else "",
+            value=(
+                sentiment_system_prompt
+                if task_preset == "Sentiment classification"
+                else ""
+            ),
             height=90,
             key=f"system-prompt:{task_preset}",
             help=(
@@ -2916,8 +3410,7 @@ def run_app() -> None:
             configured_finetuned_models_root()
         )
         local_backend_specs = {
-            f"Local · {adapter.label}": adapter
-            for adapter in comparison_local_adapters
+            f"Local · {adapter.label}": adapter for adapter in comparison_local_adapters
         }
         backend_names = st.multiselect(
             "Inference backends",
@@ -3021,7 +3514,11 @@ def run_app() -> None:
                         )
                     elif backend_name in IRIIS_GPT2_BACKEND_OPTIONS:
                         iriis_spec = IRIIS_GPT2_BACKEND_OPTIONS[backend_name]
-                        variant = "Instruction tuned" if iriis_spec.instruction_tuned else "Base"
+                        variant = (
+                            "Instruction tuned"
+                            if iriis_spec.instruction_tuned
+                            else "Base"
+                        )
                         st.caption(
                             f"Model: `{iriis_spec.model_id}`  \n"
                             f"{variant} · 124M parameters · 512-token context"
@@ -3286,7 +3783,9 @@ def run_app() -> None:
                     )
                 if "Hugging Face Inference API" in backend_names:
                     if not effective_hf_token:
-                        raise ComparisonConfigurationError("Hugging Face token is missing")
+                        raise ComparisonConfigurationError(
+                            "Hugging Face token is missing"
+                        )
                     for model_id in hf_model_ids:
                         backends.append(
                             cached_huggingface_backend(
@@ -3389,9 +3888,11 @@ def run_app() -> None:
                     "decoding": result.decoding,
                     "latency_seconds": result.latency_seconds,
                     "status": "error" if result.error else "ok",
-                    "prediction": sentiment_prediction(result.output)
-                    if task_preset == "Sentiment classification"
-                    else None,
+                    "prediction": (
+                        sentiment_prediction(result.output)
+                        if task_preset == "Sentiment classification"
+                        else None
+                    ),
                     "reference": reference_sentiment,
                     "matches_reference": (
                         sentiment_prediction(result.output) == reference_sentiment
@@ -3548,12 +4049,14 @@ def run_app() -> None:
                 if option in IRIIS_GPT2_BACKEND_OPTIONS
             ]
 
-            has_local_evaluation = any(
-                option in local_options for option in selected_evaluation_models
-            ) or any(
-                option in selected_evaluation_models
-                for option in (gemma4_base_option, himalaya_option, arkios_option)
-            ) or bool(selected_evaluation_iriis_specs)
+            has_local_evaluation = (
+                any(option in local_options for option in selected_evaluation_models)
+                or any(
+                    option in selected_evaluation_models
+                    for option in (gemma4_base_option, himalaya_option, arkios_option)
+                )
+                or bool(selected_evaluation_iriis_specs)
+            )
             evaluation_device = "auto"
             evaluation_dtype = "auto"
             evaluation_quantization = "auto"
@@ -3620,20 +4123,17 @@ def run_app() -> None:
                 seed=int(evaluation_seed),
                 thinking_level="minimal",
             )
-            evaluation_requests = len(flores_examples) * len(
-                selected_evaluation_models
-            )
+            evaluation_requests = len(flores_examples) * len(selected_evaluation_models)
             st.info(
                 f"This run will perform {evaluation_requests} translation(s) over "
                 f"{len(flores_examples)} FLORES instance(s)."
             )
             if evaluation_requests > 60:
-                st.error("Select fewer examples or models; at most 60 generations are allowed.")
+                st.error(
+                    "Select fewer examples or models; at most 60 generations are allowed."
+                )
             evaluation_context_error = ""
-            if (
-                selected_evaluation_iriis_specs
-                and int(evaluation_max_tokens) >= 512
-            ):
+            if selected_evaluation_iriis_specs and int(evaluation_max_tokens) >= 512:
                 evaluation_context_error = (
                     "Maximum new tokens must be below 512 for IRIIS Nepali GPT-2."
                 )
@@ -3696,9 +4196,7 @@ def run_app() -> None:
                             continue
                         selected_adapter, use_adapter = local_options[selected_option]
                         evaluation_adapter_required[selected_adapter.key] = (
-                            evaluation_adapter_required.get(
-                                selected_adapter.key, False
-                            )
+                            evaluation_adapter_required.get(selected_adapter.key, False)
                             or use_adapter
                         )
                     for option in selected_evaluation_models:
@@ -3888,7 +4386,9 @@ def run_app() -> None:
             key=f"nlue-count:{nlue_task_spec.key}:{int(nlue_offset)}",
         )
         nlue_slice_columns[2].caption(
-            "HF_TOKEN detected." if nlue_hf_token else "Public datasets; no token required."
+            "HF_TOKEN detected."
+            if nlue_hf_token
+            else "Public datasets; no token required."
         )
         nlue_examples_key = (
             f"nlue-examples:{nlue_task_spec.key}:{int(nlue_offset)}:"
@@ -3963,14 +4463,18 @@ def run_app() -> None:
             for option in selected_nlue_models
             if option in IRIIS_GPT2_BACKEND_OPTIONS
         ]
-        nlue_has_local = bool(selected_nlue_local) or any(
-            option in selected_nlue_models
-            for option in (
-                nlue_gemma_base_option,
-                nlue_himalaya_option,
-                nlue_arkios_option,
+        nlue_has_local = (
+            bool(selected_nlue_local)
+            or any(
+                option in selected_nlue_models
+                for option in (
+                    nlue_gemma_base_option,
+                    nlue_himalaya_option,
+                    nlue_arkios_option,
+                )
             )
-        ) or bool(selected_nlue_iriis_specs)
+            or bool(selected_nlue_iriis_specs)
+        )
         nlue_device = "auto"
         nlue_dtype = "auto"
         nlue_quantization = "auto"
@@ -4044,9 +4548,7 @@ def run_app() -> None:
             type="primary",
             key="run-nlue-evaluation",
             disabled=(
-                not nlue_examples
-                or not selected_nlue_models
-                or bool(nlue_safety_error)
+                not nlue_examples or not selected_nlue_models or bool(nlue_safety_error)
             ),
         ):
             try:
@@ -4079,9 +4581,7 @@ def run_app() -> None:
                 loaded_nlue_pairs: dict[str, Any] = {}
                 nlue_adapter_required: dict[str, bool] = {}
                 for selected_option in selected_nlue_local:
-                    selected_adapter, use_adapter = nlue_local_options[
-                        selected_option
-                    ]
+                    selected_adapter, use_adapter = nlue_local_options[selected_option]
                     nlue_adapter_required[selected_adapter.key] = (
                         nlue_adapter_required.get(selected_adapter.key, False)
                         or use_adapter
@@ -4197,11 +4697,7 @@ def run_app() -> None:
                     if row.get(primary_metric) is not None
                 ]
                 published = next(
-                    (
-                        row
-                        for row in baseline_rows
-                        if row["metric"] == primary_metric
-                    ),
+                    (row for row in baseline_rows if row["metric"] == primary_metric),
                     None,
                 )
                 if published:
@@ -4214,9 +4710,7 @@ def run_app() -> None:
                 if chart_rows:
                     st.bar_chart(chart_rows, x="model", y=primary_metric)
             st.markdown("#### Per-instance predictions")
-            st.dataframe(
-                nlue_output["details"], width="stretch", hide_index=True
-            )
+            st.dataframe(nlue_output["details"], width="stretch", hide_index=True)
             st.download_button(
                 "Download benchmark predictions as JSON",
                 json.dumps(
@@ -4235,11 +4729,7 @@ def run_app() -> None:
             "kaggle",
             "kaggle_text",
         }
-        manifest_path = (
-            None
-            if remote_dataset
-            else find_manifest(spec, data_root)
-        )
+        manifest_path = None if remote_dataset else find_manifest(spec, data_root)
         if manifest_path is None:
             st.info(
                 "Remote dataset metadata is shown in the Schema tab."

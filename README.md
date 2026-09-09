@@ -214,8 +214,14 @@ import optional `torchvision` modules in this text-only application.
 
 The app discovers the present Nepali datasets beneath `data/`, displays schema
 and manifest information, draws uniform random records with a full-text view,
-and creates configurable Unicode-aware word clouds. Pipeline selection is
-limited to raw, cleaned, preprocessed, and tokenized data. Original-English
+creates configurable Unicode-aware word clouds, and runs bounded EDA from the
+**Survey EDA** tab. The EDA view provides live progress, detailed metric tables,
+document-size and structure distributions, 2/3/4-grams, term co-occurrence
+networks, and downloadable CSV/JSON evidence. Pipeline selection is limited to
+raw, cleaned, preprocessed, and tokenized data. Nepali clouds use NFC/BOM-safe
+stopword matching, conservative attached-postposition stripping, Devanagari-only
+glyph input, and a verified Noto/Lohit-compatible font. Both Streamlit and the
+CLI load the canonical list from `configs/eda/stopwords.txt`. Original-English
 and Gemini/Gemma-translated Nepali LIMA views appear directly in the dataset
 dropdown. Use the custom-path option for a Parquet file or directory elsewhere.
 The dataset dropdown also includes the remote
@@ -385,6 +391,29 @@ Linear attention:
 ```bash
 python -m attention_maps.training --attention linear --epochs 3
 ```
+
+## Multi-dataset corpus EDA
+
+The survey EDA pipeline streams heterogeneous Hugging Face corpora through a
+shared schema and metric contract. It keeps bounded numeric samples and compact
+duplicate/vocabulary state, but does not persist sampled source text.
+Per-dataset outputs include log-scaled document-size histograms, sentence/line
+KDE plots, top 2/3/4-gram charts, seed-term co-occurrence networks, and the CSV
+tables needed to reproduce each figure.
+
+Run one configured dataset:
+
+```bash
+.venv/bin/python -m attention_maps.eda \
+  --config configs/eda/nepali_corpus_survey.json \
+  --datasets nepali-corpus-compile \
+  --output-dir artifacts/eda/smoke
+```
+
+Remove `--datasets` to run all 17 configured corpora. See the
+[methodology](docs/eda-survey-methodology.md) and active
+[work log](docs/eda-survey-progress.md) before interpreting cross-dataset
+results.
 
 ## NepBERTa fill-mask inference
 

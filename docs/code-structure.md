@@ -4,9 +4,9 @@ Reusable application code lives in the `attention_maps` package. Data
 preparation commands remain in `scripts/` because they are pipeline entry
 points rather than model internals.
 
-The standalone `apps/dataset_explorer.py` entry point provides read-only,
-interactive dataset inspection, word-cloud analysis, model comparison, and
-bounded benchmark evaluation. It remains outside the training package because
+The standalone `apps/dataset_explorer.py` entry point provides interactive
+dataset inspection, bounded survey EDA, word-cloud analysis, model comparison,
+and benchmark evaluation. It remains outside the training package because
 exploration is not a training dependency.
 
 ```text
@@ -41,6 +41,12 @@ attention_maps/
 │   ├── iriis_gpt2.py               IRIIS Nepali GPT-2 base/instruct local generation
 │   ├── nepberta.py               optional masked-LM diagnostics
 │   └── himalaya_gemma.py         Gemma 4 base + PEFT adapter generation
+├── eda/
+│   ├── contracts.py              survey configuration and result contracts
+│   ├── text.py                   schema extraction and Unicode text metrics
+│   ├── pipeline.py               bounded streaming analysis orchestration
+│   ├── reporting.py              derived JSON/CSV reports and plots
+│   └── cli.py                    multi-dataset EDA command line
 ├── evaluation/
 │   └── flores.py                 streamed FLORES loading and chrF++ scoring
 └── visualization/

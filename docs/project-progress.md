@@ -1,5 +1,8 @@
 # Project progress
 
+> Active multi-dataset EDA work is tracked separately in
+> [eda-survey-progress.md](eda-survey-progress.md).
+
 This document records the research and engineering work completed on the
 `feature/language-agnostic-phase-1` branch. Generated datasets, caches,
 checkpoints, and run artifacts are intentionally local and are not versioned.
@@ -179,3 +182,5 @@ current capabilities.
 - [Model inference and attention](model-inference-and-attention.md)
 - [Code structure](code-structure.md)
 - [Detailed script reference](scripts/README.md)
+- [Multi-dataset EDA survey progress](eda-survey-progress.md)
+- [Corpus survey EDA methodology](eda-survey-methodology.md)

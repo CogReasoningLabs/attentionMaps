@@ -8,13 +8,18 @@ from unittest.mock import patch
 from apps.dataset_explorer import (
     aya_nepali_dataset_specs,
     configured_finetuned_models_root,
+    configured_eda_output_root,
+    configured_nepali_stopwords,
     DatasetSpec,
     custom_dataset,
     discover_datasets,
+    eda_dataset_spec,
     find_manifest,
     format_bytes,
     himalaya_nepali_sft_dataset,
     extract_text,
+    find_devanagari_font,
+    font_supports_devanagari,
     inspect_huggingface_dataset,
     inspect_dataset,
     iriis_nepali_text_corpus_specs,
@@ -23,6 +28,7 @@ from apps.dataset_explorer import (
     lima_translation_dataset,
     parse_model_ids,
     parse_number_list,
+    parse_eda_terms,
     parse_stopwords,
     preview_records,
     project_inventory,
@@ -39,6 +45,22 @@ from apps.dataset_explorer import (
 
 
 class DatasetDiscoveryTests(unittest.TestCase):
+    def test_uses_repository_nepali_stopword_resource(self):
+        stopwords = configured_nepali_stopwords()
+
+        self.assertGreaterEqual(len(stopwords), 190)
+        self.assertIn("सम्बन्धी", stopwords)
+
+    def test_allows_eda_output_root_override(self):
+        with tempfile.TemporaryDirectory() as temporary_directory, patch.dict(
+            "os.environ",
+            {"ATTENTION_MAPS_EDA_OUTPUT_ROOT": temporary_directory},
+        ):
+            self.assertEqual(
+                configured_eda_output_root(),
+                Path(temporary_directory).resolve(),
+            )
+
     def test_allows_shared_finetuned_models_root_override(self):
         with tempfile.TemporaryDirectory() as temporary_directory, patch.dict(
             "os.environ",
@@ -55,8 +77,7 @@ class DatasetDiscoveryTests(unittest.TestCase):
         self.assertEqual([spec.dataset_split for spec in specs], ["train", "test"])
         self.assertTrue(
             all(
-                spec.dataset_id == "IRIIS-RESEARCH/Nepali-Text-Corpus"
-                for spec in specs
+                spec.dataset_id == "IRIIS-RESEARCH/Nepali-Text-Corpus" for spec in specs
             )
         )
         self.assertTrue(all(spec.format == "huggingface" for spec in specs))
@@ -68,9 +89,7 @@ class DatasetDiscoveryTests(unittest.TestCase):
         self.assertTrue(
             all(spec.dataset_id == "CohereLabs/aya_dataset" for spec in specs)
         )
-        self.assertTrue(
-            all(spec.filter_column == "language_code" for spec in specs)
-        )
+        self.assertTrue(all(spec.filter_column == "language_code" for spec in specs))
         self.assertTrue(all(spec.filter_value == "npi" for spec in specs))
         self.assertTrue(
             all("language_code=npi" in str(spec.location) for spec in specs)
@@ -204,27 +223,46 @@ class DatasetDiscoveryTests(unittest.TestCase):
                 ((str(path), path.stat().st_size, path.stat().st_mtime_ns),)
             )
             self.assertEqual(inventory["rows"], 2)
-            original_inventory = project_inventory(
-                inventory, original.visible_columns
-            )
+            original_inventory = project_inventory(inventory, original.visible_columns)
             translated_inventory = project_inventory(
                 inventory, translated.visible_columns
             )
-            self.assertEqual(
-                original_inventory["columns"], ["index", "source_text"]
-            )
+            self.assertEqual(original_inventory["columns"], ["index", "source_text"])
             self.assertEqual(
                 translated_inventory["columns"], ["index", "translation", "status"]
             )
 
-            sampled = sample_dataset_rows(
-                translated_inventory, 2, 42, ("translation",)
-            )
+            sampled = sample_dataset_rows(translated_inventory, 2, 42, ("translation",))
             self.assertEqual(len(sampled), 2)
             self.assertTrue(all("translation" in record for record in sampled))
 
 
 class DatasetDisplayTests(unittest.TestCase):
+    def test_builds_stable_eda_contract_and_parses_seed_terms(self):
+        viewer_spec = DatasetSpec(
+            "huggingface:org/corpus:train",
+            "Corpus",
+            "dataset",
+            (),
+            format="huggingface",
+            dataset_id="org/corpus",
+            dataset_split="train",
+        )
+
+        first = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500)
+        second = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.dataset_id, "org/corpus")
+        self.assertEqual(first.text_columns, ("text",))
+        self.assertEqual(first.source_columns, ("source",))
+        self.assertEqual(first.sample_size, 500)
+        self.assertNotIn(":", first.key)
+        self.assertEqual(
+            parse_eda_terms("मन्त्रालय, लिलाम मन्त्रालय सरकार"),
+            ("मन्त्रालय", "लिलाम", "सरकार"),
+        )
+
     def test_inspects_and_samples_only_filtered_huggingface_rows(self):
         class FakeStream:
             num_shards = 46
@@ -244,10 +282,7 @@ class DatasetDisplayTests(unittest.TestCase):
             )
 
             def __iter__(self):
-                return (
-                    {"language_code": "npi"}
-                    for _ in range(4_002)
-                )
+                return ({"language_code": "npi"} for _ in range(4_002))
 
         with patch("datasets.load_dataset", return_value=FakeStream()) as loader:
             inventory = inspect_huggingface_dataset(
@@ -280,9 +315,7 @@ class DatasetDisplayTests(unittest.TestCase):
         with patch(
             "datasets.load_dataset", return_value=filtered_stream
         ) as filtered_loader:
-            records = sample_huggingface_rows(
-                inventory, 1, 42, ("inputs", "targets")
-            )
+            records = sample_huggingface_rows(inventory, 1, 42, ("inputs", "targets"))
 
         self.assertEqual(inventory["rows"], 4_002)
         self.assertEqual(inventory["files"], 46)
@@ -298,7 +331,11 @@ class DatasetDisplayTests(unittest.TestCase):
 
     def test_inspects_and_samples_huggingface_dataset_with_bounded_streaming(self):
         class FakeStream:
-            features = {"conversations": "list<struct>", "source": "string", "id": "string"}
+            features = {
+                "conversations": "list<struct>",
+                "source": "string",
+                "id": "string",
+            }
             info = SimpleNamespace(
                 splits={
                     "train": SimpleNamespace(
@@ -416,6 +453,31 @@ class DatasetDisplayTests(unittest.TestCase):
         self.assertEqual(frequencies["नेपाली"], 1)
         self.assertNotIn("र", frequencies)
 
+    def test_nepali_word_frequencies_normalize_clean_and_strip_suffixes(self):
+        records = [
+            {"text": ("गाउँपालिकाको सम्बन्धी मन्त्रालयबाट ASCII 123 ☒ " "गाउँपालिकाको")}
+        ]
+
+        frequencies = word_frequencies(
+            records,
+            ["text"],
+            stopwords=parse_stopwords("\ufeff सम्बन्धी  \n"),
+            devanagari_only=True,
+            strip_nepali_suffixes=True,
+        )
+
+        self.assertEqual(frequencies["गाउँपालिका"], 2)
+        self.assertEqual(frequencies["मन्त्रालय"], 1)
+        self.assertNotIn("सम्बन्धी", frequencies)
+        self.assertNotIn("ascii", frequencies)
+        self.assertNotIn("123", frequencies)
+
+    def test_default_wordcloud_font_has_devanagari_glyphs(self):
+        font = find_devanagari_font()
+
+        self.assertIsNotNone(font)
+        self.assertTrue(font_supports_devanagari(font))
+
     def test_detects_plain_and_nested_text_columns(self):
         schema = [
             {"column": "doc_id", "type": "string", "nullable": "True"},
@@ -441,6 +503,70 @@ class DatasetDisplayTests(unittest.TestCase):
 
 
 class DatasetExplorerAppTests(unittest.TestCase):
+    def test_runs_eda_from_ui_and_exposes_detailed_results(self):
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit and PyArrow are required")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            dataset_path = root / "fixture.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "text": [
+                            "नेपाल सरकारको मन्त्रालयले सूचना जारी गर्यो।",
+                            "गाउँ कार्यपालिकाको कार्यालय नेपालमा छ।",
+                            "लिलाम सम्बन्धी सूचना मन्त्रालयबाट आयो।",
+                        ],
+                        "source": ["a", "b", "a"],
+                    }
+                ),
+                dataset_path,
+            )
+            with patch.dict(
+                "os.environ",
+                {"ATTENTION_MAPS_EDA_OUTPUT_ROOT": str(root / "eda-output")},
+            ):
+                app = AppTest.from_file(
+                    Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+                ).run(timeout=30)
+                next(
+                    item
+                    for item in app.checkbox
+                    if item.label == "Use custom Parquet path"
+                ).set_value(True).run(timeout=30)
+                next(
+                    item
+                    for item in app.text_input
+                    if item.label == "Parquet file or directory"
+                ).set_value(str(dataset_path)).run(timeout=30)
+                next(
+                    item
+                    for item in app.button
+                    if item.label == "Run EDA for this dataset"
+                ).click().run(timeout=30)
+
+                result_key = f"eda-result:custom:{dataset_path.resolve()}"
+                self.assertIn(result_key, app.session_state)
+                self.assertFalse(app.exception)
+                self.assertTrue(
+                    {
+                        "Usable rows",
+                        "Median words",
+                        "Median sentence",
+                        "Duplicates",
+                    }.issubset({metric.label for metric in app.metric})
+                )
+                output_dir = Path(app.session_state[result_key]["output_dir"])
+                self.assertTrue(
+                    (output_dir / "document_size_distribution.png").is_file()
+                )
+                self.assertTrue((output_dir / "top_2grams.csv").is_file())
+
     def test_nlue_benchmark_exposes_collection_tasks_and_local_models(self):
         try:
             from streamlit.testing.v1 import AppTest
@@ -452,11 +578,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
             checkpoint.mkdir()
             (checkpoint / "adapter_config.json").write_text(
                 json.dumps(
-                    {
-                        "base_model_name_or_path": (
-                            "meta-llama/Llama-2-7b-chat-hf"
-                        )
-                    }
+                    {"base_model_name_or_path": ("meta-llama/Llama-2-7b-chat-hf")}
                 ),
                 encoding="utf-8",
             )
@@ -466,8 +588,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
                 {"ATTENTION_MAPS_FINETUNED_MODELS_ROOT": temporary_directory},
             ):
                 app = AppTest.from_file(
-                    Path(__file__).resolve().parents[1]
-                    / "apps/dataset_explorer.py"
+                    Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
                 ).run(timeout=30)
 
         task_selector = next(
@@ -475,20 +596,27 @@ class DatasetExplorerAppTests(unittest.TestCase):
         )
         self.assertEqual(len(task_selector.options), 16)
         self.assertTrue(any("Belebele" in option for option in task_selector.options))
-        self.assertTrue(any("Global-MMLU" in option for option in task_selector.options))
+        self.assertTrue(
+            any("Global-MMLU" in option for option in task_selector.options)
+        )
         self.assertTrue(any("XL-Sum" in option for option in task_selector.options))
         model_selector = next(
             item
             for item in app.multiselect
             if item.label == "Decoder models to benchmark"
         )
+        self.assertTrue(any(tab.label == "Survey EDA" for tab in app.tabs))
+        self.assertTrue(
+            any(button.label == "Run EDA for this dataset" for button in app.button)
+        )
+        self.assertTrue(
+            any(field.label == "Sampled rows" for field in app.number_input)
+        )
         llama_label = "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"
         self.assertIn(f"Base · {llama_label}", model_selector.options)
         self.assertIn(f"Finetuned · {llama_label}", model_selector.options)
         self.assertIn("Gemma 4 · Google API", model_selector.options)
-        self.assertIn(
-            "Gemma 4 E2B Base · Hugging Face local", model_selector.options
-        )
+        self.assertIn("Gemma 4 E2B Base · Hugging Face local", model_selector.options)
         self.assertIn(
             "IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local",
             model_selector.options,
@@ -517,9 +645,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
             item for item in app.multiselect if item.label == "Models to benchmark"
         )
         self.assertIn("Gemma 4 · Google API", model_selector.options)
-        self.assertIn(
-            "Gemma 4 E2B Base · Hugging Face local", model_selector.options
-        )
+        self.assertIn("Gemma 4 E2B Base · Hugging Face local", model_selector.options)
         iriis_model_options = (
             "IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local",
             "IRIIS GPT-2 Nepali 124M Base · Hugging Face local",
@@ -566,11 +692,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
             checkpoint.mkdir()
             (checkpoint / "adapter_config.json").write_text(
                 json.dumps(
-                    {
-                        "base_model_name_or_path": (
-                            "meta-llama/Llama-2-7b-chat-hf"
-                        )
-                    }
+                    {"base_model_name_or_path": ("meta-llama/Llama-2-7b-chat-hf")}
                 ),
                 encoding="utf-8",
             )
@@ -589,9 +711,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
 
             label = "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"
             local_selector = next(
-                item
-                for item in app.selectbox
-                if item.label == "Local finetuned model"
+                item for item in app.selectbox if item.label == "Local finetuned model"
             )
             self.assertIn(label, local_selector.options)
             quantization_selector = next(
@@ -603,15 +723,11 @@ class DatasetExplorerAppTests(unittest.TestCase):
                 ["auto", "4bit", "8bit", "none"],
             )
             comparison_selector = next(
-                item
-                for item in app.multiselect
-                if item.label == "Inference backends"
+                item for item in app.multiselect if item.label == "Inference backends"
             )
             self.assertIn(f"Local · {label}", comparison_selector.options)
             evaluation_selector = next(
-                item
-                for item in app.multiselect
-                if item.label == "Models to benchmark"
+                item for item in app.multiselect if item.label == "Models to benchmark"
             )
             self.assertIn(f"Base · {label}", evaluation_selector.options)
             self.assertIn(f"Finetuned · {label}", evaluation_selector.options)

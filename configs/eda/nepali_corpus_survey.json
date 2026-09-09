@@ -1,0 +1,46 @@
+{
+  "name": "Himalaya Nepali corpus survey",
+  "analysis": {
+    "sample_size": 50000,
+    "seed": 42,
+    "shuffle_buffer_size": 1000,
+    "min_tokens": 5,
+    "min_devanagari_ratio": 0.7,
+    "reservoir_size": 10000,
+    "max_vocabulary": 500000,
+    "top_tokens": 30,
+    "near_duplicate_distance": 3,
+    "simhash_bands": 8,
+    "ngram_orders": [2, 3, 4],
+    "max_ngrams": 250000,
+    "top_ngrams": 25,
+    "max_pattern_tokens_per_document": 5000,
+    "cooccurrence_terms": [
+      "मन्त्रालय", "लिलाम", "सरकार", "कार्यालय",
+      "विभाग", "समिति", "आयोग", "पालिका"
+    ],
+    "cooccurrence_window": 6,
+    "max_cooccurrence_edges": 100000,
+    "top_cooccurrence_edges": 50,
+    "cooccurrence_stopwords_file": "stopwords.txt"
+  },
+  "datasets": [
+    {"key": "nepali-corpus-compile", "dataset_id": "himalaya-ai/nepali-corpus-compile"},
+    {"key": "sangraha-nepali", "dataset_id": "himalaya-ai/sangraha_nepali"},
+    {"key": "nepali-news-corpus", "dataset_id": "himalaya-ai/nepali-news-corpus"},
+    {"key": "cc100-nepali", "dataset_id": "himalaya-ai/cc100-nepali"},
+    {"key": "gpt2-pretrain-corpus", "dataset_id": "himalaya-ai/gpt2-pretrain-corpus"},
+    {"key": "nepali-roman-pretrain", "dataset_id": "himalaya-ai/nepali-roman-pretrain"},
+    {"key": "nepali-pretrain-corpus", "dataset_id": "himalaya-ai/nepali-pretrain-corpus"},
+    {"key": "nepali-tokenizer-corpus", "dataset_id": "himalaya-ai/nepali-tokenizer-corpus"},
+    {"key": "nepali-sft-compile", "dataset_id": "himalaya-ai/nepali-sft-compile"},
+    {"key": "nepali-sft-dataset", "dataset_id": "himalaya-ai/nepali-sft-dataset"},
+    {"key": "nepali-proofreader", "dataset_id": "himalaya-ai/nepali-proofreader"},
+    {"key": "deva-sft-compile-v1", "dataset_id": "himalaya-ai/deva-sft-compile-v1"},
+    {"key": "nepali-pdf-corpus", "dataset_id": "himalaya-ai/nepali_pdf_corpus"},
+    {"key": "nepali-hermes-function-calling-v1", "dataset_id": "himalaya-ai/nepali-hermes-function-calling-v1"},
+    {"key": "nepali-json-mode-singleturn", "dataset_id": "himalaya-ai/nepali-json-mode-singleturn"},
+    {"key": "nepali-honorific-bench", "dataset_id": "himalaya-ai/nepali-honorific-bench"},
+    {"key": "sft-harl-full-v1", "dataset_id": "himalaya-ai/sft-harl-full-v1"}
+  ]
+}
