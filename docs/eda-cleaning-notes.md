@@ -4,13 +4,104 @@
 
 The **Survey EDA** workflow is diagnostic and read-only with respect to source
 datasets. It calculates evidence and writes derived reports, but it does not
-delete or rewrite source rows. Dataset cleaning and deduplication will be a
-separate, reproducible pipeline with a dry-run report before materializing a
-cleaned dataset.
+delete, rewrite, or language-filter source rows. A source-specific cleaning
+pipeline is already implemented for the local PDF, news, and lyrics
+pretraining sources. A general cleaning and reviewed near-deduplication
+pipeline for every catalog dataset is still planned.
 
 The same notes are rendered in the Streamlit **EDA & cleaning notes** tab so
 the methodology stays beside the metrics. This Markdown file is the source of
 truth; changes should be made here rather than duplicated in UI code.
+
+## Language filtration and preprocessing actually implemented
+
+Three related paths exist, and their outputs must not be confused:
+
+| Path | Changes source text? | Purpose |
+|---|---:|---|
+| Survey EDA | No | Normalize a temporary analysis copy and report quality evidence |
+| Pretraining source cleaner | Writes a new cleaned dataset | Filter and standardize the local PDF, news, and lyrics sources |
+| WordCloud/token display | No | Produce visualization-only Devanagari tokens and stopword-filtered frequencies |
+
+### Survey EDA: diagnostic normalization, not row filtration
+
+For each extracted logical document, Survey EDA applies NFC normalization,
+removes a byte-order mark, and collapses whitespace on an in-memory analysis
+copy. Its regex tokenizer recognizes Devanagari, Latin, and numeric word-like
+units. A row is **usable** when text can be extracted, the normalized text is
+non-empty, and at least one regex token exists.
+
+The configured minimum words and Devanagari ratio are quality thresholds only.
+The Streamlit defaults are five words and a `0.70` Devanagari ratio. A row below
+either threshold remains in the EDA length, token, n-gram, duplicate, and other
+usable-row metrics; it simply does not increment `quality_pass_rows` or
+`devanagari_clean_rows`. Running Survey EDA therefore does not create a cleaned
+dataset.
+
+The EDA Devanagari ratio is the share of Unicode letters and combining marks in
+the U+0900–U+097F block. Whitespace, digits, and punctuation do not contribute
+to that ratio.
+
+### Pretraining source cleaner: materialized filtering
+
+`scripts/clean_pretraining_sources.py` uses the shared implementation in
+`scripts/utils/nepali_text.py`. It currently supports the local Nepali PDF,
+news, and music-lyrics sources and writes new sharded Parquet outputs rather
+than changing raw inputs. Processing occurs in this order:
+
+1. Reject missing, non-string, or blank text as `empty`.
+2. Normalize Unicode to NFC by default; NFKC is available explicitly.
+3. Remove script/style payloads, HTML comments/tags, URLs, and email addresses,
+   and decode HTML entities.
+4. Remove unsafe Unicode control/format characters while preserving newlines,
+   tabs, ZWNJ, and ZWJ needed by Devanagari conjuncts.
+5. Calculate the Devanagari-letter ratio before strict character removal. Its
+   denominator is Unicode **letters only**, so spaces, punctuation, symbols,
+   and digits do not dilute it.
+6. Reject rows below the configured ratio as `low_ratio`, or below the minimum
+   Devanagari-letter count as `few_devanagari`.
+7. In the CLI's default `strict` mode, retain Devanagari characters, ASCII
+   digits, whitespace, approved punctuation, ZWNJ, and ZWJ. Remove unsupported
+   characters, isolated punctuation tokens, and repeated separators. The
+   alternative `preserve` mode retains legitimate mixed-script content after
+   the row passes the language gate.
+8. Normalize intra-line whitespace and repeated blank lines, then reject empty
+   or too-short results as `empty` or `short`.
+
+The current command defaults are:
+
+| Source | Minimum Devanagari-letter ratio | Minimum Devanagari letters | Minimum visible characters |
+|---|---:|---:|---:|
+| PDF | 0.80 | 10 | 20 |
+| News | 0.80 | 10 | 20 |
+| Lyrics | 0.10 | 10 | 10 |
+
+The lyrics threshold is intentionally more permissive for short, mixed-script
+song content. These values are operational defaults, not research-validated
+universal thresholds; retention and rejection counts must be reviewed per
+source before promotion.
+
+Accepted rows preserve `source`, `source_id`, `language`, URL, raw-text SHA-256,
+cleaned-text SHA-256, and cleaning statistics in metadata. Each source also
+receives a manifest containing the exact configuration, output files, counts,
+rejection reasons, and character retention. The next build stage can perform
+deterministic source sampling, exact cleaned-text SHA-256 deduplication, stable
+train/validation/test assignment, and schema standardization. Cleaning itself
+does not tokenize, split, combine, or near-deduplicate the sources.
+
+### Important limitation of the language gate
+
+This is a **Devanagari-script heuristic**, not a Nepali language classifier.
+Hindi, Sanskrit, Marathi, or other Devanagari text can pass it, while Romanized
+Nepali can fail it. Code-switching may also be damaged by `strict` mode. A
+future language-identification stage should combine script ratio with a
+validated Nepali classifier and manual samples; it must record confidence and
+quarantine uncertain rows rather than silently deleting them.
+
+Stopword removal and suffix stripping are used for WordCloud/co-occurrence
+analysis only. They are not applied to materialized training text, because
+removing function words or changing word forms would alter the language-model
+training distribution.
 
 ## Dataset-purpose taxonomy and provider lineage
 

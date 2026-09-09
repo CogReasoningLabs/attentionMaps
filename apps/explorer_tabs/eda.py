@@ -377,4 +377,9 @@ def render_eda_tab(
             )
 
 def render_notes_tab(*, st: Any) -> None:
+    st.info(
+        "Survey EDA only normalizes an in-memory analysis copy; it does not "
+        "remove rows or rewrite the source dataset. The notes below separately "
+        "describe the materializing pretraining cleaner."
+    )
     st.markdown(load_eda_cleaning_notes())

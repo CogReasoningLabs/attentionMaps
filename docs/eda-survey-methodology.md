@@ -25,6 +25,14 @@ duplicate screening, compact SimHash fingerprints for approximate candidate
 lookup, bounded token/source/pattern counters, and deterministic reservoirs of
 numeric metrics for quantiles and plots.
 
+Survey normalization is not a cleaning or language-filtering stage. It creates
+an in-memory NFC-normalized analysis copy, removes byte-order marks, and
+normalizes whitespace. Rows below the configured word-count or Devanagari-ratio
+threshold remain in all usable-row diagnostics; those thresholds only control
+the `quality_pass_rows` and `devanagari_clean_rows` counters. The separate local
+pretraining cleaner, its source-specific defaults, and its limitations are
+documented in [eda-cleaning-notes.md](eda-cleaning-notes.md).
+
 ## Core measurements
 
 - Document length: normalized Unicode character count and regex token count.

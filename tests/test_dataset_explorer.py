@@ -127,6 +127,9 @@ class DatasetDiscoveryTests(unittest.TestCase):
         notes = load_eda_cleaning_notes()
 
         self.assertIn("## Core EDA logic", notes)
+        self.assertIn("## Language filtration and preprocessing actually implemented", notes)
+        self.assertIn("Devanagari-script heuristic", notes)
+        self.assertIn("low_ratio", notes)
         self.assertIn("## Planned cleaning and deduplication pipeline", notes)
         self.assertIn("SimHash", notes)
         self.assertIn("quarantine", notes)

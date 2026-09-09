@@ -51,6 +51,9 @@ direct copy.
   load it consistently from both CLI survey configs and Streamlit.
 - [x] Add an in-app EDA and cleaning notes tab documenting current metrics,
   duplicate screening, the planned auditable cleaning flow, and open decisions.
+- [x] Document the implemented local pretraining language gate and preprocessing
+  order, source-specific defaults, rejection reasons, provenance outputs, and
+  its distinction from read-only EDA and visualization-only token filtering.
 - [x] Add independent provider, source/adaptation lineage, purpose hierarchy,
   and tags to the dataset explorer; classify the 17 known Himalaya AI datasets.
 - [x] Make dataset-purpose choices dependent on the selected provider/lineage,
@@ -70,8 +73,9 @@ direct copy.
   streamed slice and pin repository revisions for the final survey run.
 - [ ] Decide which corpora belong in pretraining, SFT, evaluation, or mixed
   survey strata before interpreting a single combined ranking.
-- [ ] Implement the documented cleaning/deduplication materialization pipeline;
-  the current Survey EDA duplicate metrics remain read-only screening evidence.
+- [ ] Generalize cleaning beyond the implemented local PDF/news/lyrics cleaner
+  and add reviewed near-deduplication materialization; current Survey EDA
+  duplicate metrics remain read-only screening evidence.
 
 ## Next work
 
