@@ -31,6 +31,7 @@ from attention_maps.inference.comparison import (
     run_comparison,
 )  # noqa: E402
 from attention_maps.inference.local_comparison import (  # noqa: E402
+    LOCAL_QUANTIZATION_CHOICES,
     LocalInferenceError,
     discover_local_adapters,
     load_local_model_pair,
@@ -59,6 +60,7 @@ DEFAULT_LOCAL_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
 LOCAL_MODEL_KEYS = {
     "local-gpt2": "gpt2-alpaca-nepali-lora",
     "local-tinyllama": "tinyllama-nepali-alpaca-qlora",
+    "local-llama7b": "ckpt-504-llama7b",
 }
 
 
@@ -76,6 +78,7 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
             "gemma",
             "local-gpt2",
             "local-tinyllama",
+            "local-llama7b",
             "himalayagpt",
             "arkios",
             "gemma4-base",
@@ -135,6 +138,12 @@ def parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
         "--local-dtype",
         choices=("auto", "float32", "bfloat16", "float16"),
         default="auto",
+    )
+    parser.add_argument(
+        "--local-quantization",
+        choices=LOCAL_QUANTIZATION_CHOICES,
+        default="auto",
+        help="PEFT base-model quantization; auto uses 4-bit for models of 7B+",
     )
     parser.add_argument(
         "--local-files-only",
@@ -287,7 +296,9 @@ def build_backends(args: argparse.Namespace):
                     spec,
                     device=args.local_device,
                     dtype=args.local_dtype,
+                    quantization=args.local_quantization,
                     local_files_only=args.local_files_only,
+                    token=args.hf_token or os.getenv("HF_TOKEN"),
                 )
             except LocalInferenceError as error:
                 raise ComparisonConfigurationError(str(error)) from error

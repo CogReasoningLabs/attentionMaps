@@ -16,6 +16,7 @@ python-dotenv>=1.0
 transformers>=5.15,<6
 peft>=0.20,<1
 accelerate>=1.12,<2
+bitsandbytes>=0.48
 safetensors>=0.7,<1
 tiktoken>=0.9,<1
 sacrebleu>=2.4,<3

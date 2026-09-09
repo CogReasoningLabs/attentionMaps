@@ -41,6 +41,15 @@ from attention_maps.evaluation.flores import (
     load_flores_examples,
     score_flores_results,
 )
+from attention_maps.evaluation.nlue import (
+    DECODER_EVALUATION_TASKS,
+    NLUE_COLLECTION_URL,
+    NLUE_PAPER_URL,
+    NLUEEvaluationError,
+    load_nlue_examples,
+    published_baseline_rows,
+    score_nlue_results,
+)
 from attention_maps.inference.comparison import (
     ComparisonConfigurationError,
     DecodingConfig,
@@ -67,6 +76,12 @@ from attention_maps.inference.himalayagpt import (
     HimalayaGPTBackend,
     load_himalayagpt,
 )
+from attention_maps.inference.iriis_gpt2 import (
+    IRIIS_GPT2_BACKEND_OPTIONS,
+    IRIISGPT2Backend,
+    iriis_gpt2_spec,
+    load_iriis_gpt2,
+)
 from attention_maps.inference.gemini_translation import GeminiTranslationBackend
 from attention_maps.inference.gemma4_base import (
     DEFAULT_GEMMA4_BASE_MODEL_ID,
@@ -75,11 +90,13 @@ from attention_maps.inference.gemma4_base import (
     load_gemma4_base,
 )
 from attention_maps.inference.local_comparison import (
+    LOCAL_QUANTIZATION_CHOICES,
     LocalAdapterSpec,
     LocalInferenceError,
     build_local_decoding_grid,
     discover_local_adapters,
     load_local_model_pair,
+    local_model_context_limit,
     local_comparison_csv,
     run_local_comparison,
 )
@@ -99,7 +116,7 @@ DEFAULT_FINETUNED_MODELS_ROOT = PROJECT_ROOT / "finetuned_models"
 ARKIOS_BACKEND_NAME = "Arkios 1B Chat · local"
 HIMALAYAGPT_BACKEND_NAME = "HimalayaGPT 0.5B Instruct · local"
 GEMMA4_BASE_BACKEND_NAME = "Gemma 4 E2B Base · Hugging Face local"
-GOOGLE_GEMMA_EVALUATION_OPTION = "API · Google Gemma"
+GOOGLE_GEMMA_BACKEND_NAME = "Gemma 4 · Google API"
 DEFAULT_LIMA_TRANSLATIONS_PATH = (
     PROJECT_ROOT / "data_generation_pipeline" / "lima_translations.json"
 )
@@ -114,6 +131,15 @@ KAGGLE_HATE_SPEECH_DATASET_ID = "mohanbhandari/nepali-hate-speech-collection"
 KAGGLE_OSCAR_NEPALI_DATASET_ID = "hsebarp/oscar-corpus-nepali"
 KAGGLE_OSCAR_DEDUP_FILE = "ne_dedup.txt"
 KAGGLE_OSCAR_DEDUP_APPROX_BYTES = 1_240_000_000
+
+
+def configured_finetuned_models_root() -> Path:
+    """Resolve an optional shared model directory for worktree-based runs."""
+
+    configured = os.getenv("ATTENTION_MAPS_FINETUNED_MODELS_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return DEFAULT_FINETUNED_MODELS_ROOT
 SPLIT_NAMES = ("train", "validation", "test")
 PIPELINE_STAGES = ("raw", "cleaned", "processed", "tokenized")
 PIPELINE_STAGE_LABELS = {
@@ -1415,6 +1441,22 @@ def run_app() -> None:
             token=_token or None,
         )
 
+    @st.cache_data(show_spinner=False)
+    def cached_nlue_examples(
+        task_key: str,
+        offset: int,
+        limit: int,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> list[Any]:
+        del credential_fingerprint
+        return load_nlue_examples(
+            task_key,
+            offset=offset,
+            limit=limit,
+            token=_token or None,
+        )
+
     @st.cache_resource(show_spinner=False)
     def cached_google_backend(
         model_id: str,
@@ -1451,8 +1493,13 @@ def run_app() -> None:
         base_model_id: str,
         device: str,
         dtype: str,
+        quantization: str,
+        load_adapter: bool,
         local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
     ) -> Any:
+        del credential_fingerprint
         adapter_spec = LocalAdapterSpec(
             key=adapter_key,
             label=adapter_label,
@@ -1463,7 +1510,10 @@ def run_app() -> None:
             adapter_spec,
             device=device,
             dtype=dtype,
+            quantization=quantization,
+            load_adapter=load_adapter,
             local_files_only=local_files_only,
+            token=_token or None,
         )
 
     @st.cache_resource(show_spinner=False)
@@ -1496,6 +1546,24 @@ def run_app() -> None:
             device=device,
             dtype=dtype,
             local_files_only=local_files_only,
+        )
+
+    @st.cache_resource(show_spinner=False)
+    def cached_iriis_gpt2(
+        model_key: str,
+        device: str,
+        dtype: str,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        return load_iriis_gpt2(
+            iriis_gpt2_spec(model_key),
+            device=device,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            token=_token or None,
         )
 
     @st.cache_resource(show_spinner=False)
@@ -1696,6 +1764,7 @@ def run_app() -> None:
         local_inference_tab,
         inference_tab,
         evaluation_tab,
+        nlue_tab,
         manifest_tab,
     ) = st.tabs(
         [
@@ -1706,6 +1775,7 @@ def run_app() -> None:
             "Local base vs finetuned",
             "Model comparison",
             "Evaluation",
+            "Decoder benchmarks",
             "Manifest",
         ]
     )
@@ -2335,12 +2405,13 @@ def run_app() -> None:
             "Compare a local base model with its finetuned PEFT adapter on exactly "
             "the same prompt and decoding parameters. No inference API is used."
         )
-        local_adapters = discover_local_adapters(DEFAULT_FINETUNED_MODELS_ROOT)
+        local_models_root = configured_finetuned_models_root()
+        local_adapters = discover_local_adapters(local_models_root)
         local_text_columns = text_columns(inventory["schema"])
         if not local_adapters:
             st.warning(
                 f"No complete PEFT adapters were found under "
-                f"`{DEFAULT_FINETUNED_MODELS_ROOT}`."
+                f"`{local_models_root}`."
             )
         elif not local_text_columns:
             st.warning(
@@ -2529,7 +2600,7 @@ def run_app() -> None:
             key="local-generation-seed",
         )
 
-        local_runtime_columns = st.columns(3)
+        local_runtime_columns = st.columns(4)
         local_device = local_runtime_columns[0].selectbox(
             "Device", ("auto", "cuda", "cpu"), key="local-device"
         )
@@ -2538,7 +2609,17 @@ def run_app() -> None:
             ("auto", "float32", "bfloat16", "float16"),
             key="local-dtype",
         )
-        local_files_only = local_runtime_columns[2].checkbox(
+        local_quantization = local_runtime_columns[2].selectbox(
+            "Quantization",
+            LOCAL_QUANTIZATION_CHOICES,
+            key="local-quantization",
+            help=(
+                "Auto uses CUDA 4-bit for 7B+ PEFT base models and no "
+                "quantization for smaller models. GPU overflow may be offloaded "
+                "to CPU or data/cache/model_offload."
+            ),
+        )
+        local_files_only = local_runtime_columns[3].checkbox(
             "Use cached base weights only",
             value=False,
             key="local-files-only",
@@ -2587,6 +2668,7 @@ def run_app() -> None:
                 f"{selected_adapter.key if selected_adapter else ''}\0"
                 f"{local_prompt_preview}\0{local_system_prompt}\0"
                 f"{local_configs}\0{local_device}\0{local_dtype}\0"
+                f"{local_quantization}\0"
                 f"{local_files_only}"
             ).encode("utf-8")
         ).hexdigest()[:16]
@@ -2616,7 +2698,11 @@ def run_app() -> None:
                         selected_adapter.base_model_id,
                         local_device,
                         local_dtype,
+                        local_quantization,
+                        True,
                         local_files_only,
+                        secret_fingerprint(os.getenv("HF_TOKEN", "")),
+                        os.getenv("HF_TOKEN", ""),
                     )
                     st.session_state[local_results_key] = run_local_comparison(
                         local_bundle,
@@ -2827,7 +2913,7 @@ def run_app() -> None:
                 st.text(prompt_preview)
 
         comparison_local_adapters = discover_local_adapters(
-            DEFAULT_FINETUNED_MODELS_ROOT
+            configured_finetuned_models_root()
         )
         local_backend_specs = {
             f"Local · {adapter.label}": adapter
@@ -2838,8 +2924,9 @@ def run_app() -> None:
             (
                 "Gemini API",
                 "Gemini Flash Lite API",
-                "Google Gemma API",
+                GOOGLE_GEMMA_BACKEND_NAME,
                 "Hugging Face Inference API",
+                *IRIIS_GPT2_BACKEND_OPTIONS,
                 GEMMA4_BASE_BACKEND_NAME,
                 HIMALAYAGPT_BACKEND_NAME,
                 ARKIOS_BACKEND_NAME,
@@ -2863,8 +2950,14 @@ def run_app() -> None:
             for name in backend_names
             if name in local_backend_specs
         ]
+        selected_iriis_gpt2_specs = [
+            IRIIS_GPT2_BACKEND_OPTIONS[name]
+            for name in backend_names
+            if name in IRIIS_GPT2_BACKEND_OPTIONS
+        ]
         comparison_local_device = "auto"
         comparison_local_dtype = "auto"
+        comparison_local_quantization = "auto"
         comparison_local_files_only = False
         selected_arkios = ARKIOS_BACKEND_NAME in backend_names
         selected_himalayagpt = HIMALAYAGPT_BACKEND_NAME in backend_names
@@ -2873,6 +2966,7 @@ def run_app() -> None:
             int(selected_arkios)
             + int(selected_himalayagpt)
             + int(selected_gemma4_base)
+            + len(selected_iriis_gpt2_specs)
         )
         if backend_names:
             backend_columns = st.columns(len(backend_names))
@@ -2894,7 +2988,7 @@ def run_app() -> None:
                             DEFAULT_GEMINI_FLASH_LITE_MODEL,
                         )
                         st.caption("Uses GEMINI_API_KEY through the Interactions API")
-                    elif backend_name == "Google Gemma API":
+                    elif backend_name == GOOGLE_GEMMA_BACKEND_NAME:
                         google_gemma_model = st.text_input(
                             "Google Gemma model", DEFAULT_GOOGLE_GEMMA_MODEL
                         )
@@ -2925,6 +3019,13 @@ def run_app() -> None:
                             f"Base: `{local_spec.base_model_id}`  \n"
                             f"Adapter: `{local_spec.path.name}`"
                         )
+                    elif backend_name in IRIIS_GPT2_BACKEND_OPTIONS:
+                        iriis_spec = IRIIS_GPT2_BACKEND_OPTIONS[backend_name]
+                        variant = "Instruction tuned" if iriis_spec.instruction_tuned else "Base"
+                        st.caption(
+                            f"Model: `{iriis_spec.model_id}`  \n"
+                            f"{variant} · 124M parameters · 512-token context"
+                        )
                     elif backend_name == ARKIOS_BACKEND_NAME:
                         st.caption(
                             f"Model: `{DEFAULT_ARKIOS_MODEL_ID}`  \n"
@@ -2943,7 +3044,7 @@ def run_app() -> None:
                         )
             if selected_comparison_local_specs or selected_full_local_models:
                 st.markdown("##### Local model runtime")
-                comparison_runtime_columns = st.columns(3)
+                comparison_runtime_columns = st.columns(4)
                 comparison_local_device = comparison_runtime_columns[0].selectbox(
                     "Local device",
                     ("auto", "cuda", "cpu"),
@@ -2959,7 +3060,16 @@ def run_app() -> None:
                     comparison_dtype_options,
                     key="comparison-local-dtype",
                 )
-                comparison_local_files_only = comparison_runtime_columns[2].checkbox(
+                comparison_local_quantization = comparison_runtime_columns[2].selectbox(
+                    "PEFT quantization",
+                    LOCAL_QUANTIZATION_CHOICES,
+                    key="comparison-local-quantization",
+                    help=(
+                        "Auto uses CUDA 4-bit for PEFT base models of 7B or "
+                        "larger and permits CPU/disk offload when VRAM is full."
+                    ),
+                )
+                comparison_local_files_only = comparison_runtime_columns[3].checkbox(
                     "Cached base weights only",
                     value=False,
                     key="comparison-local-files-only",
@@ -3041,7 +3151,7 @@ def run_app() -> None:
         hosted_model_count = (
             int("Gemini API" in backend_names)
             + int("Gemini Flash Lite API" in backend_names)
-            + int("Google Gemma API" in backend_names)
+            + int(GOOGLE_GEMMA_BACKEND_NAME in backend_names)
             + (
                 len(hf_model_ids)
                 if "Hugging Face Inference API" in backend_names
@@ -3065,7 +3175,7 @@ def run_app() -> None:
 
         local_context_error = ""
         for local_spec in selected_comparison_local_specs:
-            context_limit = 1_024 if local_spec.base_model_id == "gpt2" else 2_048
+            context_limit = local_model_context_limit(local_spec.base_model_id)
             if int(inference_max_tokens) >= context_limit:
                 local_context_error = (
                     f"Maximum new tokens must be below {context_limit:,} for "
@@ -3073,6 +3183,15 @@ def run_app() -> None:
                 )
                 st.error(local_context_error)
                 break
+        if (
+            not local_context_error
+            and selected_iriis_gpt2_specs
+            and int(inference_max_tokens) >= 512
+        ):
+            local_context_error = (
+                "Maximum new tokens must be below 512 for IRIIS Nepali GPT-2."
+            )
+            st.error(local_context_error)
         if (
             not local_context_error
             and selected_himalayagpt
@@ -3098,7 +3217,8 @@ def run_app() -> None:
                 f"{backend_names}\0{gemini_model}\0{gemini_flash_lite_model}\0"
                 f"{google_gemma_model}\0{hf_model_ids}\0{hf_provider}\0"
                 f"{configs}\0{comparison_local_device}\0"
-                f"{comparison_local_dtype}\0{comparison_local_files_only}"
+                f"{comparison_local_dtype}\0{comparison_local_quantization}\0"
+                f"{comparison_local_files_only}"
             ).encode("utf-8")
         ).hexdigest()[:16]
         results_key = f"inference-results:{spec.key}:{result_context}"
@@ -3134,7 +3254,7 @@ def run_app() -> None:
                 if {
                     "Gemini API",
                     "Gemini Flash Lite API",
-                    "Google Gemma API",
+                    GOOGLE_GEMMA_BACKEND_NAME,
                 }.intersection(backend_names):
                     if not effective_gemini_key:
                         raise ComparisonConfigurationError(
@@ -3156,7 +3276,7 @@ def run_app() -> None:
                             effective_gemini_key,
                         )
                     )
-                if "Google Gemma API" in backend_names:
+                if GOOGLE_GEMMA_BACKEND_NAME in backend_names:
                     backends.append(
                         cached_google_backend(
                             google_gemma_model,
@@ -3184,9 +3304,26 @@ def run_app() -> None:
                         local_spec.base_model_id,
                         comparison_local_device,
                         comparison_local_dtype,
+                        comparison_local_quantization,
+                        True,
                         comparison_local_files_only,
+                        secret_fingerprint(effective_hf_token),
+                        effective_hf_token,
                     )
                     backends.append(LocalPeftBackend(local_bundle))
+                for iriis_spec in selected_iriis_gpt2_specs:
+                    backends.append(
+                        IRIISGPT2Backend(
+                            cached_iriis_gpt2(
+                                iriis_spec.key,
+                                comparison_local_device,
+                                comparison_local_dtype,
+                                comparison_local_files_only,
+                                secret_fingerprint(effective_hf_token),
+                                effective_hf_token,
+                            )
+                        )
+                    )
                 if selected_himalayagpt:
                     backends.append(
                         HimalayaGPTBackend(
@@ -3351,12 +3488,12 @@ def run_app() -> None:
 
             st.markdown("#### Models")
             teacher_option = f"Teacher · {LIMA_TEACHER_MODEL}"
-            google_gemma_api_option = GOOGLE_GEMMA_EVALUATION_OPTION
+            google_gemma_api_option = GOOGLE_GEMMA_BACKEND_NAME
             arkios_option = "Other · Arkios 1B Chat"
             himalaya_option = "Other · HimalayaGPT 0.5B Instruct"
-            gemma4_base_option = "Base · Gemma 4 E2B"
+            gemma4_base_option = GEMMA4_BASE_BACKEND_NAME
             evaluation_adapters = discover_local_adapters(
-                DEFAULT_FINETUNED_MODELS_ROOT
+                configured_finetuned_models_root()
             )
             local_options: dict[str, tuple[LocalAdapterSpec, bool]] = {}
             for adapter in evaluation_adapters:
@@ -3366,6 +3503,7 @@ def run_app() -> None:
                 teacher_option,
                 google_gemma_api_option,
                 *local_options,
+                *IRIIS_GPT2_BACKEND_OPTIONS,
                 gemma4_base_option,
                 himalaya_option,
                 arkios_option,
@@ -3404,18 +3542,24 @@ def run_app() -> None:
                     "checkpoint. The first local run downloads about 10.2 GB of "
                     "BF16 weights and may require an accepted Hub license/HF_TOKEN."
                 )
+            selected_evaluation_iriis_specs = [
+                IRIIS_GPT2_BACKEND_OPTIONS[option]
+                for option in selected_evaluation_models
+                if option in IRIIS_GPT2_BACKEND_OPTIONS
+            ]
 
             has_local_evaluation = any(
                 option in local_options for option in selected_evaluation_models
             ) or any(
                 option in selected_evaluation_models
                 for option in (gemma4_base_option, himalaya_option, arkios_option)
-            )
+            ) or bool(selected_evaluation_iriis_specs)
             evaluation_device = "auto"
             evaluation_dtype = "auto"
+            evaluation_quantization = "auto"
             evaluation_local_only = False
             if has_local_evaluation:
-                runtime_columns = st.columns(3)
+                runtime_columns = st.columns(4)
                 evaluation_device = runtime_columns[0].selectbox(
                     "Evaluation device",
                     ("auto", "cuda", "cpu"),
@@ -3431,7 +3575,16 @@ def run_app() -> None:
                     dtype_choices,
                     key="flores-dtype",
                 )
-                evaluation_local_only = runtime_columns[2].checkbox(
+                evaluation_quantization = runtime_columns[2].selectbox(
+                    "PEFT quantization",
+                    LOCAL_QUANTIZATION_CHOICES,
+                    key="flores-quantization",
+                    help=(
+                        "Auto uses CUDA 4-bit for PEFT base models of 7B or "
+                        "larger and permits CPU/disk offload when VRAM is full."
+                    ),
+                )
+                evaluation_local_only = runtime_columns[3].checkbox(
                     "Cached model files only",
                     key="flores-local-only",
                 )
@@ -3476,13 +3629,23 @@ def run_app() -> None:
             )
             if evaluation_requests > 60:
                 st.error("Select fewer examples or models; at most 60 generations are allowed.")
+            evaluation_context_error = ""
+            if (
+                selected_evaluation_iriis_specs
+                and int(evaluation_max_tokens) >= 512
+            ):
+                evaluation_context_error = (
+                    "Maximum new tokens must be below 512 for IRIIS Nepali GPT-2."
+                )
+                st.error(evaluation_context_error)
 
             evaluation_context = hashlib.sha256(
                 (
                     f"{flores_split}\0{flores_offset}\0{flores_count}\0"
                     f"{selected_evaluation_models}\0{translation_prompt}\0"
                     f"{evaluation_config}\0{evaluation_device}\0{evaluation_dtype}\0"
-                    f"{evaluation_local_only}\0{evaluation_google_gemma_model}"
+                    f"{evaluation_quantization}\0{evaluation_local_only}\0"
+                    f"{evaluation_google_gemma_model}"
                 ).encode("utf-8")
             ).hexdigest()[:16]
             evaluation_results_key = f"flores-results:{evaluation_context}"
@@ -3493,6 +3656,7 @@ def run_app() -> None:
                     not selected_evaluation_models
                     or evaluation_requests > 60
                     or "{text}" not in translation_prompt
+                    or bool(evaluation_context_error)
                 ),
                 key="run-flores-evaluation",
             ):
@@ -3526,6 +3690,17 @@ def run_app() -> None:
                         )
 
                     loaded_pairs: dict[str, Any] = {}
+                    evaluation_adapter_required: dict[str, bool] = {}
+                    for selected_option in selected_evaluation_models:
+                        if selected_option not in local_options:
+                            continue
+                        selected_adapter, use_adapter = local_options[selected_option]
+                        evaluation_adapter_required[selected_adapter.key] = (
+                            evaluation_adapter_required.get(
+                                selected_adapter.key, False
+                            )
+                            or use_adapter
+                        )
                     for option in selected_evaluation_models:
                         if option not in local_options:
                             continue
@@ -3538,12 +3713,29 @@ def run_app() -> None:
                                 adapter.base_model_id,
                                 evaluation_device,
                                 evaluation_dtype,
+                                evaluation_quantization,
+                                evaluation_adapter_required[adapter.key],
                                 evaluation_local_only,
+                                secret_fingerprint(flores_hf_token),
+                                flores_hf_token,
                             )
                         evaluation_backends.append(
                             LocalPeftBackend(
                                 loaded_pairs[adapter.key],
                                 use_adapter=use_adapter,
+                            )
+                        )
+                    for iriis_spec in selected_evaluation_iriis_specs:
+                        evaluation_backends.append(
+                            IRIISGPT2Backend(
+                                cached_iriis_gpt2(
+                                    iriis_spec.key,
+                                    evaluation_device,
+                                    evaluation_dtype,
+                                    evaluation_local_only,
+                                    secret_fingerprint(flores_hf_token),
+                                    flores_hf_token,
+                                )
                             )
                         )
                     if himalaya_option in selected_evaluation_models:
@@ -3627,6 +3819,415 @@ def run_app() -> None:
                     width="stretch",
                     hide_index=True,
                 )
+
+    with nlue_tab:
+        st.markdown("### Nepali decoder and generation benchmarks")
+        st.markdown(
+            f"Official [IRIIS dataset collection]({NLUE_COLLECTION_URL}) · "
+            f"[benchmark paper and published baselines]({NLUE_PAPER_URL})"
+        )
+        st.caption(
+            "All tasks run through text generation: 13 generatively prompted NLUE "
+            "tasks plus Belebele Nepali reading comprehension, Global-MMLU Nepali "
+            "knowledge/reasoning, and XL-Sum Nepali abstractive summarization. "
+            "FLORES translation remains in the adjacent Evaluation tab."
+        )
+        nlue_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+        nlue_task_spec = st.selectbox(
+            "Decoder benchmark task",
+            DECODER_EVALUATION_TASKS,
+            format_func=lambda task: f"{task.category} · {task.label}",
+            key="nlue-task",
+        )
+        task_columns = st.columns(4)
+        task_columns[0].metric("Official split", nlue_task_spec.split)
+        task_columns[1].metric("Split rows", f"{nlue_task_spec.split_size:,}")
+        task_columns[2].metric("Evaluation type", nlue_task_spec.kind)
+        task_columns[3].metric(
+            "Primary metric", nlue_task_spec.primary_metric or "manual review"
+        )
+        st.caption(
+            f"Dataset: `{nlue_task_spec.dataset_id}` · pinned revision: "
+            f"`{nlue_task_spec.revision[:12]}`"
+        )
+        if nlue_task_spec.source_url != NLUE_COLLECTION_URL:
+            st.markdown(f"[Official benchmark source]({nlue_task_spec.source_url})")
+
+        baseline_rows = published_baseline_rows(nlue_task_spec.key)
+        st.markdown("#### Published standard results")
+        if baseline_rows:
+            st.dataframe(baseline_rows, width="stretch", hide_index=True)
+        else:
+            st.info(
+                "No directly comparable published score is attached to this task. "
+                "Use the selected models below for an identical-prompt comparison."
+            )
+        if nlue_task_spec.kind == "manual":
+            st.warning(
+                "GMET has no gold-answer column. The paper used native-speaker "
+                "manual judgment because more than one masked completion may be "
+                "valid. Predictions are generated and exported here, but no "
+                "automatic accuracy or paper delta is fabricated."
+            )
+
+        nlue_slice_columns = st.columns(3)
+        nlue_offset = nlue_slice_columns[0].number_input(
+            "Starting position",
+            min_value=0,
+            max_value=nlue_task_spec.split_size - 1,
+            value=0,
+            step=1,
+            key=f"nlue-offset:{nlue_task_spec.key}",
+        )
+        nlue_count = nlue_slice_columns[1].number_input(
+            "Examples",
+            min_value=1,
+            max_value=min(100, nlue_task_spec.split_size - int(nlue_offset)),
+            value=min(10, nlue_task_spec.split_size - int(nlue_offset)),
+            step=1,
+            key=f"nlue-count:{nlue_task_spec.key}:{int(nlue_offset)}",
+        )
+        nlue_slice_columns[2].caption(
+            "HF_TOKEN detected." if nlue_hf_token else "Public datasets; no token required."
+        )
+        nlue_examples_key = (
+            f"nlue-examples:{nlue_task_spec.key}:{int(nlue_offset)}:"
+            f"{int(nlue_count)}"
+        )
+        if st.button("Load benchmark instances", key="load-nlue-instances"):
+            try:
+                with st.spinner("Streaming the requested pinned benchmark slice…"):
+                    st.session_state[nlue_examples_key] = cached_nlue_examples(
+                        nlue_task_spec.key,
+                        int(nlue_offset),
+                        int(nlue_count),
+                        secret_fingerprint(nlue_hf_token),
+                        nlue_hf_token,
+                    )
+            except NLUEEvaluationError as error:
+                st.error(str(error))
+        nlue_examples = st.session_state.get(nlue_examples_key, [])
+        if nlue_examples:
+            st.markdown("#### Benchmark instances")
+            st.dataframe(
+                [example.as_dict() for example in nlue_examples],
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.info("Load a bounded benchmark slice before running model inference.")
+
+        st.markdown("#### Models")
+        nlue_adapters = discover_local_adapters(configured_finetuned_models_root())
+        nlue_local_options: dict[str, tuple[LocalAdapterSpec, bool]] = {}
+        for adapter in nlue_adapters:
+            nlue_local_options[f"Base · {adapter.label}"] = (adapter, False)
+            nlue_local_options[f"Finetuned · {adapter.label}"] = (adapter, True)
+        nlue_gemini_option = "Gemini API"
+        nlue_google_gemma_option = GOOGLE_GEMMA_BACKEND_NAME
+        nlue_gemma_base_option = GEMMA4_BASE_BACKEND_NAME
+        nlue_himalaya_option = HIMALAYAGPT_BACKEND_NAME
+        nlue_arkios_option = ARKIOS_BACKEND_NAME
+        selected_nlue_models = st.multiselect(
+            "Decoder models to benchmark",
+            [
+                nlue_gemini_option,
+                nlue_google_gemma_option,
+                *nlue_local_options,
+                *IRIIS_GPT2_BACKEND_OPTIONS,
+                nlue_gemma_base_option,
+                nlue_himalaya_option,
+                nlue_arkios_option,
+            ],
+            default=[],
+            key="nlue-models",
+            help="Base and finetuned variants share one loaded PEFT model pair.",
+        )
+        nlue_api_columns = st.columns(2)
+        nlue_gemini_model = DEFAULT_GEMINI_MODEL
+        if nlue_gemini_option in selected_nlue_models:
+            nlue_gemini_model = nlue_api_columns[0].text_input(
+                "Benchmark Gemini model", DEFAULT_GEMINI_MODEL
+            )
+        nlue_google_gemma_model = DEFAULT_GOOGLE_GEMMA_MODEL
+        if nlue_google_gemma_option in selected_nlue_models:
+            nlue_google_gemma_model = nlue_api_columns[1].text_input(
+                "Benchmark Google Gemma model", DEFAULT_GOOGLE_GEMMA_MODEL
+            )
+
+        selected_nlue_local = [
+            option for option in selected_nlue_models if option in nlue_local_options
+        ]
+        selected_nlue_iriis_specs = [
+            IRIIS_GPT2_BACKEND_OPTIONS[option]
+            for option in selected_nlue_models
+            if option in IRIIS_GPT2_BACKEND_OPTIONS
+        ]
+        nlue_has_local = bool(selected_nlue_local) or any(
+            option in selected_nlue_models
+            for option in (
+                nlue_gemma_base_option,
+                nlue_himalaya_option,
+                nlue_arkios_option,
+            )
+        ) or bool(selected_nlue_iriis_specs)
+        nlue_device = "auto"
+        nlue_dtype = "auto"
+        nlue_quantization = "auto"
+        nlue_local_only = False
+        if nlue_has_local:
+            nlue_runtime_columns = st.columns(4)
+            nlue_device = nlue_runtime_columns[0].selectbox(
+                "Benchmark device", ("auto", "cuda", "cpu")
+            )
+            nlue_dtype = nlue_runtime_columns[1].selectbox(
+                "Benchmark dtype", ("auto", "float32", "bfloat16", "float16")
+            )
+            nlue_quantization = nlue_runtime_columns[2].selectbox(
+                "Benchmark PEFT quantization",
+                LOCAL_QUANTIZATION_CHOICES,
+                help=(
+                    "Auto uses CUDA 4-bit for PEFT base models of 7B or larger "
+                    "and permits CPU/disk offload when VRAM is full."
+                ),
+            )
+            nlue_local_only = nlue_runtime_columns[3].checkbox(
+                "Benchmark cached weights only"
+            )
+
+        generation_columns = st.columns(2)
+        default_nlue_max_tokens = 128 if nlue_task_spec.kind == "generation" else 16
+        nlue_max_tokens = generation_columns[0].number_input(
+            "Benchmark maximum new tokens",
+            1,
+            512,
+            default_nlue_max_tokens,
+            key=f"nlue-max-tokens:{nlue_task_spec.key}",
+        )
+        nlue_seed = generation_columns[1].number_input(
+            "Benchmark evaluation seed", min_value=0, value=42
+        )
+        nlue_config = DecodingConfig(
+            temperature=0,
+            top_p=1,
+            top_k=None,
+            max_new_tokens=int(nlue_max_tokens),
+            seed=int(nlue_seed),
+            thinking_level="minimal",
+        )
+        nlue_request_count = len(nlue_examples) * len(selected_nlue_models)
+        st.info(
+            f"This run will perform {nlue_request_count} deterministic "
+            f"generation(s) over {len(nlue_examples)} loaded instance(s)."
+        )
+        nlue_safety_error = ""
+        if nlue_request_count > 200:
+            nlue_safety_error = "Reduce models or examples to at most 200 generations."
+            st.error(nlue_safety_error)
+        if selected_nlue_iriis_specs and int(nlue_max_tokens) >= 512:
+            nlue_safety_error = (
+                "Benchmark maximum new tokens must be below 512 for IRIIS Nepali GPT-2."
+            )
+            st.error(nlue_safety_error)
+
+        nlue_context = hashlib.sha256(
+            (
+                f"{nlue_task_spec.key}\0{nlue_offset}\0{nlue_count}\0"
+                f"{selected_nlue_models}\0{nlue_gemini_model}\0"
+                f"{nlue_google_gemma_model}\0{nlue_device}\0{nlue_dtype}\0"
+                f"{nlue_quantization}\0{nlue_local_only}\0{nlue_config}"
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        nlue_results_key = f"nlue-results:{nlue_context}"
+        if st.button(
+            "Run decoder evaluation",
+            type="primary",
+            key="run-nlue-evaluation",
+            disabled=(
+                not nlue_examples
+                or not selected_nlue_models
+                or bool(nlue_safety_error)
+            ),
+        ):
+            try:
+                nlue_backends = []
+                effective_gemini_key = os.getenv("GEMINI_API_KEY", "")
+                if {
+                    nlue_gemini_option,
+                    nlue_google_gemma_option,
+                }.intersection(selected_nlue_models) and not effective_gemini_key:
+                    raise ComparisonConfigurationError(
+                        "GEMINI_API_KEY is required for selected Google models"
+                    )
+                if nlue_gemini_option in selected_nlue_models:
+                    nlue_backends.append(
+                        cached_google_backend(
+                            nlue_gemini_model,
+                            secret_fingerprint(effective_gemini_key),
+                            effective_gemini_key,
+                        )
+                    )
+                if nlue_google_gemma_option in selected_nlue_models:
+                    nlue_backends.append(
+                        cached_google_backend(
+                            nlue_google_gemma_model,
+                            secret_fingerprint(effective_gemini_key),
+                            effective_gemini_key,
+                        )
+                    )
+
+                loaded_nlue_pairs: dict[str, Any] = {}
+                nlue_adapter_required: dict[str, bool] = {}
+                for selected_option in selected_nlue_local:
+                    selected_adapter, use_adapter = nlue_local_options[
+                        selected_option
+                    ]
+                    nlue_adapter_required[selected_adapter.key] = (
+                        nlue_adapter_required.get(selected_adapter.key, False)
+                        or use_adapter
+                    )
+                for option in selected_nlue_local:
+                    adapter, use_adapter = nlue_local_options[option]
+                    if adapter.key not in loaded_nlue_pairs:
+                        loaded_nlue_pairs[adapter.key] = cached_local_model_pair(
+                            adapter.key,
+                            adapter.label,
+                            str(adapter.path),
+                            adapter.base_model_id,
+                            nlue_device,
+                            nlue_dtype,
+                            nlue_quantization,
+                            nlue_adapter_required[adapter.key],
+                            nlue_local_only,
+                            secret_fingerprint(nlue_hf_token),
+                            nlue_hf_token,
+                        )
+                    nlue_backends.append(
+                        LocalPeftBackend(
+                            loaded_nlue_pairs[adapter.key], use_adapter=use_adapter
+                        )
+                    )
+                for iriis_spec in selected_nlue_iriis_specs:
+                    nlue_backends.append(
+                        IRIISGPT2Backend(
+                            cached_iriis_gpt2(
+                                iriis_spec.key,
+                                nlue_device,
+                                nlue_dtype,
+                                nlue_local_only,
+                                secret_fingerprint(nlue_hf_token),
+                                nlue_hf_token,
+                            )
+                        )
+                    )
+                if nlue_himalaya_option in selected_nlue_models:
+                    nlue_backends.append(
+                        HimalayaGPTBackend(
+                            cached_himalayagpt(
+                                DEFAULT_HIMALAYAGPT_MODEL_ID,
+                                DEFAULT_HIMALAYAGPT_REVISION,
+                                nlue_device,
+                                nlue_dtype,
+                                nlue_local_only,
+                            )
+                        )
+                    )
+                if nlue_arkios_option in selected_nlue_models:
+                    nlue_backends.append(
+                        ArkiosBackend(
+                            cached_arkios(
+                                DEFAULT_ARKIOS_MODEL_ID,
+                                DEFAULT_ARKIOS_REVISION,
+                                nlue_device,
+                                nlue_dtype,
+                                nlue_local_only,
+                            )
+                        )
+                    )
+                if nlue_gemma_base_option in selected_nlue_models:
+                    nlue_backends.append(
+                        Gemma4BaseBackend(
+                            cached_gemma4_base(
+                                DEFAULT_GEMMA4_BASE_MODEL_ID,
+                                DEFAULT_GEMMA4_BASE_REVISION,
+                                nlue_device,
+                                nlue_dtype,
+                                nlue_local_only,
+                                secret_fingerprint(nlue_hf_token),
+                                nlue_hf_token,
+                            )
+                        )
+                    )
+                with st.spinner(
+                    f"Running and scoring {nlue_request_count} benchmark generations…"
+                ):
+                    nlue_raw_results = run_comparison(
+                        nlue_backends,
+                        [example.prompt for example in nlue_examples],
+                        [nlue_config],
+                        prompt_template="{text}",
+                    )
+                    nlue_details, nlue_summaries = score_nlue_results(
+                        nlue_task_spec.key, nlue_raw_results, nlue_examples
+                    )
+                st.session_state[nlue_results_key] = {
+                    "details": nlue_details,
+                    "summaries": nlue_summaries,
+                }
+            except (
+                ComparisonConfigurationError,
+                NLUEEvaluationError,
+                LocalInferenceError,
+                ImportError,
+                RuntimeError,
+                OSError,
+            ) as error:
+                st.error(f"Could not complete decoder evaluation: {error}")
+
+        nlue_output = st.session_state.get(nlue_results_key)
+        if nlue_output:
+            st.markdown("#### Your model performance")
+            nlue_summary_rows = nlue_output["summaries"]
+            st.dataframe(nlue_summary_rows, width="stretch", hide_index=True)
+            primary_metric = nlue_task_spec.primary_metric
+            if primary_metric:
+                chart_rows = [
+                    {"model": row["model"], primary_metric: row.get(primary_metric)}
+                    for row in nlue_summary_rows
+                    if row.get(primary_metric) is not None
+                ]
+                published = next(
+                    (
+                        row
+                        for row in baseline_rows
+                        if row["metric"] == primary_metric
+                    ),
+                    None,
+                )
+                if published:
+                    chart_rows.append(
+                        {
+                            "model": f"Published best · {published['reference_model']}",
+                            primary_metric: published["published_best"],
+                        }
+                    )
+                if chart_rows:
+                    st.bar_chart(chart_rows, x="model", y=primary_metric)
+            st.markdown("#### Per-instance predictions")
+            st.dataframe(
+                nlue_output["details"], width="stretch", hide_index=True
+            )
+            st.download_button(
+                "Download benchmark predictions as JSON",
+                json.dumps(
+                    nlue_output,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                ),
+                file_name=f"decoder_{nlue_task_spec.key}_results.json",
+                mime="application/json",
+            )
 
     with manifest_tab:
         remote_dataset = spec.format in {

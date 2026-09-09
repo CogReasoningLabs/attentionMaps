@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from apps.dataset_explorer import (
     aya_nepali_dataset_specs,
+    configured_finetuned_models_root,
     DatasetSpec,
     custom_dataset,
     discover_datasets,
@@ -38,6 +39,16 @@ from apps.dataset_explorer import (
 
 
 class DatasetDiscoveryTests(unittest.TestCase):
+    def test_allows_shared_finetuned_models_root_override(self):
+        with tempfile.TemporaryDirectory() as temporary_directory, patch.dict(
+            "os.environ",
+            {"ATTENTION_MAPS_FINETUNED_MODELS_ROOT": temporary_directory},
+        ):
+            self.assertEqual(
+                configured_finetuned_models_root(),
+                Path(temporary_directory).resolve(),
+            )
+
     def test_exposes_iriis_nepali_corpus_splits_as_streaming_datasets(self):
         specs = iriis_nepali_text_corpus_specs()
 
@@ -427,6 +438,183 @@ class DatasetDisplayTests(unittest.TestCase):
             parse_model_ids("org/model-a\norg/model-b, org/model-c"),
             ["org/model-a", "org/model-b", "org/model-c"],
         )
+
+
+class DatasetExplorerAppTests(unittest.TestCase):
+    def test_nlue_benchmark_exposes_collection_tasks_and_local_models(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "ckpt-504-llama7b"
+            checkpoint.mkdir()
+            (checkpoint / "adapter_config.json").write_text(
+                json.dumps(
+                    {
+                        "base_model_name_or_path": (
+                            "meta-llama/Llama-2-7b-chat-hf"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (checkpoint / "adapter_model.safetensors").touch()
+            with patch.dict(
+                "os.environ",
+                {"ATTENTION_MAPS_FINETUNED_MODELS_ROOT": temporary_directory},
+            ):
+                app = AppTest.from_file(
+                    Path(__file__).resolve().parents[1]
+                    / "apps/dataset_explorer.py"
+                ).run(timeout=30)
+
+        task_selector = next(
+            item for item in app.selectbox if item.label == "Decoder benchmark task"
+        )
+        self.assertEqual(len(task_selector.options), 16)
+        self.assertTrue(any("Belebele" in option for option in task_selector.options))
+        self.assertTrue(any("Global-MMLU" in option for option in task_selector.options))
+        self.assertTrue(any("XL-Sum" in option for option in task_selector.options))
+        model_selector = next(
+            item
+            for item in app.multiselect
+            if item.label == "Decoder models to benchmark"
+        )
+        llama_label = "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"
+        self.assertIn(f"Base · {llama_label}", model_selector.options)
+        self.assertIn(f"Finetuned · {llama_label}", model_selector.options)
+        self.assertIn("Gemma 4 · Google API", model_selector.options)
+        self.assertIn(
+            "Gemma 4 E2B Base · Hugging Face local", model_selector.options
+        )
+        self.assertIn(
+            "IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local",
+            model_selector.options,
+        )
+        self.assertIn(
+            "IRIIS GPT-2 Nepali 124M Base · Hugging Face local",
+            model_selector.options,
+        )
+
+    def test_evaluation_dropdown_includes_google_gemma_api(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+        from attention_maps.evaluation.flores import FloresExample
+
+        app = AppTest.from_file(
+            Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+        )
+        app.session_state["flores-examples:devtest:0:5"] = [
+            FloresExample(0, 0, "Hello", "नमस्ते")
+        ]
+        app.run(timeout=30)
+
+        model_selector = next(
+            item for item in app.multiselect if item.label == "Models to benchmark"
+        )
+        self.assertIn("Gemma 4 · Google API", model_selector.options)
+        self.assertIn(
+            "Gemma 4 E2B Base · Hugging Face local", model_selector.options
+        )
+        iriis_model_options = (
+            "IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local",
+            "IRIIS GPT-2 Nepali 124M Base · Hugging Face local",
+        )
+        for option in iriis_model_options:
+            self.assertIn(option, model_selector.options)
+        comparison_selector = next(
+            item for item in app.multiselect if item.label == "Inference backends"
+        )
+        self.assertIn("Gemma 4 · Google API", comparison_selector.options)
+        self.assertIn(
+            "Gemma 4 E2B Base · Hugging Face local",
+            comparison_selector.options,
+        )
+        for option in iriis_model_options:
+            self.assertIn(option, comparison_selector.options)
+        model_selector.set_value(
+            [
+                "Teacher · gemini-3.5-flash-lite",
+                "Other · Arkios 1B Chat",
+                "Gemma 4 · Google API",
+            ]
+        ).run(timeout=30)
+        model_selector = next(
+            item for item in app.multiselect if item.label == "Models to benchmark"
+        )
+        self.assertIn("Gemma 4 · Google API", model_selector.value)
+        gemma_model_field = next(
+            item
+            for item in app.text_input
+            if item.label == "Evaluation Google Gemma model"
+        )
+        self.assertEqual(gemma_model_field.value, "gemma-4-26b-a4b-it")
+
+    def test_llama_checkpoint_appears_in_all_inference_selectors(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+        from attention_maps.evaluation.flores import FloresExample
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "ckpt-504-llama7b"
+            checkpoint.mkdir()
+            (checkpoint / "adapter_config.json").write_text(
+                json.dumps(
+                    {
+                        "base_model_name_or_path": (
+                            "meta-llama/Llama-2-7b-chat-hf"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (checkpoint / "adapter_model.safetensors").touch()
+            with patch.dict(
+                "os.environ",
+                {"ATTENTION_MAPS_FINETUNED_MODELS_ROOT": temporary_directory},
+            ):
+                app = AppTest.from_file(
+                    Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+                )
+                app.session_state["flores-examples:devtest:0:5"] = [
+                    FloresExample(0, 0, "Hello", "नमस्ते")
+                ]
+                app.run(timeout=30)
+
+            label = "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"
+            local_selector = next(
+                item
+                for item in app.selectbox
+                if item.label == "Local finetuned model"
+            )
+            self.assertIn(label, local_selector.options)
+            quantization_selector = next(
+                item for item in app.selectbox if item.label == "Quantization"
+            )
+            self.assertEqual(quantization_selector.value, "auto")
+            self.assertEqual(
+                quantization_selector.options,
+                ["auto", "4bit", "8bit", "none"],
+            )
+            comparison_selector = next(
+                item
+                for item in app.multiselect
+                if item.label == "Inference backends"
+            )
+            self.assertIn(f"Local · {label}", comparison_selector.options)
+            evaluation_selector = next(
+                item
+                for item in app.multiselect
+                if item.label == "Models to benchmark"
+            )
+            self.assertIn(f"Base · {label}", evaluation_selector.options)
+            self.assertIn(f"Finetuned · {label}", evaluation_selector.options)
 
 
 if __name__ == "__main__":

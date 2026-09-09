@@ -21,10 +21,31 @@ from typing import Any, Callable
 from attention_maps.inference.comparison import (
     ComparisonConfigurationError,
     DEFAULT_GEMINI_FLASH_LITE_MODEL,
+    DEFAULT_GOOGLE_GEMMA_MODEL,
     GoogleGenAIBackend,
+    LocalPeftBackend,
     OpenAIBackend,
     build_decoding_grid,
     build_prompt,
+)
+from attention_maps.inference.gemma4_base import (
+    DEFAULT_GEMMA4_BASE_MODEL_ID,
+    DEFAULT_GEMMA4_BASE_REVISION,
+    Gemma4BaseBackend,
+    load_gemma4_base,
+)
+from attention_maps.inference.iriis_gpt2 import (
+    IRIIS_GPT2_BACKEND_OPTIONS,
+    IRIISGPT2Backend,
+    iriis_gpt2_spec,
+    load_iriis_gpt2,
+)
+from attention_maps.inference.local_comparison import (
+    LOCAL_QUANTIZATION_CHOICES,
+    LocalAdapterSpec,
+    discover_local_adapters,
+    load_local_model_pair,
+    local_model_context_limit,
 )
 from scripts.utils.nepali_text import (
     CleaningConfig,
@@ -33,9 +54,12 @@ from scripts.utils.nepali_text import (
 )
 from apps.dataset_explorer import (
     DEFAULT_DATA_ROOT,
+    GEMMA4_BASE_BACKEND_NAME,
+    GOOGLE_GEMMA_BACKEND_NAME,
     PROJECT_ROOT,
     VIEWER_PREFIX,
     aya_nepali_dataset_specs,
+    configured_finetuned_models_root,
     custom_dataset,
     discover_datasets,
     extract_text,
@@ -382,6 +406,74 @@ def run_generator_app() -> None:
         del fingerprint
         return GoogleGenAIBackend(model, _key)
 
+    @st.cache_resource(show_spinner=False)
+    def cached_generator_gemma4_base(
+        model_id: str,
+        revision: str,
+        device: str,
+        dtype: str,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        return load_gemma4_base(
+            model_id=model_id,
+            revision=revision,
+            device=device,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            token=_token or None,
+        )
+
+    @st.cache_resource(show_spinner=False)
+    def cached_generator_iriis_gpt2(
+        model_key: str,
+        device: str,
+        dtype: str,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        return load_iriis_gpt2(
+            iriis_gpt2_spec(model_key),
+            device=device,
+            dtype=dtype,
+            local_files_only=local_files_only,
+            token=_token or None,
+        )
+
+    @st.cache_resource(show_spinner=False)
+    def cached_generator_local_adapter(
+        adapter_key: str,
+        adapter_label: str,
+        adapter_path: str,
+        base_model_id: str,
+        device: str,
+        dtype: str,
+        quantization: str,
+        local_files_only: bool,
+        credential_fingerprint: str,
+        _token: str,
+    ) -> Any:
+        del credential_fingerprint
+        spec = LocalAdapterSpec(
+            key=adapter_key,
+            label=adapter_label,
+            path=Path(adapter_path),
+            base_model_id=base_model_id,
+        )
+        return load_local_model_pair(
+            spec,
+            device=device,
+            dtype=dtype,
+            quantization=quantization,
+            load_adapter=True,
+            local_files_only=local_files_only,
+            token=_token or None,
+        )
+
     @st.cache_data(show_spinner=False)
     def cached_huggingface_inventory(
         dataset_id: str, config: str | None, split: str, filter_column: str | None,
@@ -576,15 +668,99 @@ def run_generator_app() -> None:
         output_schema = {}; schema_error = str(error); st.error(schema_error)
 
     st.markdown("### Inference and decoding")
-    backend_names = st.multiselect("Inference backends", ("OpenAI API", "Gemini API"))
-    backend_cols = st.columns(2)
+    generator_local_adapters = discover_local_adapters(
+        configured_finetuned_models_root()
+    )
+    generator_local_options = {
+        f"Finetuned · {adapter.label}": adapter
+        for adapter in generator_local_adapters
+    }
+    backend_names = st.multiselect(
+        "Inference backends",
+        (
+            "OpenAI API",
+            "Gemini API",
+            GOOGLE_GEMMA_BACKEND_NAME,
+            *IRIIS_GPT2_BACKEND_OPTIONS,
+            GEMMA4_BASE_BACKEND_NAME,
+            *generator_local_options,
+        ),
+    )
+    backend_cols = st.columns(3)
     openai_model = backend_cols[0].text_input("OpenAI model", "gpt-4.1-mini")
     gemini_model = backend_cols[1].text_input("Gemini model", DEFAULT_GEMINI_FLASH_LITE_MODEL)
+    google_gemma_model = backend_cols[2].text_input(
+        "Google Gemma API model", DEFAULT_GOOGLE_GEMMA_MODEL
+    )
+    selected_local_adapters = [
+        generator_local_options[name]
+        for name in backend_names
+        if name in generator_local_options
+    ]
+    selected_local_gemma = GEMMA4_BASE_BACKEND_NAME in backend_names
+    selected_iriis_gpt2_specs = [
+        IRIIS_GPT2_BACKEND_OPTIONS[name]
+        for name in backend_names
+        if name in IRIIS_GPT2_BACKEND_OPTIONS
+    ]
+    selected_local_models = bool(
+        selected_local_gemma
+        or selected_local_adapters
+        or selected_iriis_gpt2_specs
+    )
+    local_model_device = "auto"
+    local_model_dtype = "auto"
+    local_model_quantization = "auto"
+    local_model_files_only = False
+    if selected_local_gemma:
+        st.caption(
+            f"Local model: `{DEFAULT_GEMMA4_BASE_MODEL_ID}`. The first run may "
+            "download about 10.2 GB of weights."
+        )
+    for adapter in selected_local_adapters:
+        st.caption(
+            f"Local adapter: **{adapter.label}** · base: `{adapter.base_model_id}` · "
+            f"checkpoint: `{adapter.path}`"
+        )
+    for iriis_spec in selected_iriis_gpt2_specs:
+        variant = "instruction tuned" if iriis_spec.instruction_tuned else "base"
+        st.caption(
+            f"Local model: `{iriis_spec.model_id}` · {variant} · "
+            "124M parameters · 512-token context"
+        )
+    if selected_local_models:
+        local_model_columns = st.columns(4)
+        local_model_device = local_model_columns[0].selectbox(
+            "Local model device", ("auto", "cuda", "cpu")
+        )
+        local_model_dtype = local_model_columns[1].selectbox(
+            "Local model dtype", ("auto", "float32", "bfloat16", "float16")
+        )
+        local_model_quantization = local_model_columns[2].selectbox(
+            "PEFT quantization",
+            LOCAL_QUANTIZATION_CHOICES,
+            help=(
+                "Auto uses CUDA 4-bit for PEFT base models of 7B or larger and "
+                "permits CPU/disk offload when VRAM is full."
+            ),
+        )
+        local_model_files_only = local_model_columns[3].checkbox(
+            "Cached base weights only"
+        )
     grid_cols = st.columns(5)
     temperatures_text = grid_cols[0].text_input("Temperatures", "0.7")
     top_ps_text = grid_cols[1].text_input("Top-p", "0.95")
     top_ks_text = grid_cols[2].text_input("Top-k (blank = off)", "")
-    max_tokens = grid_cols[3].number_input("Max output tokens", 1, 8_192, 512)
+    generator_context_profile = (
+        "iriis-gpt2" if selected_iriis_gpt2_specs else "general"
+    )
+    max_tokens = grid_cols[3].number_input(
+        "Max output tokens",
+        1,
+        8_192,
+        256 if selected_iriis_gpt2_specs else 512,
+        key=f"generator-max-output-tokens:{generator_context_profile}",
+    )
     seed = grid_cols[4].number_input("Seed", 0, value=42)
     try:
         top_ks: list[int | None] = [int(item) for item in parse_number_list(top_ks_text, value_type=int, name="top-k")] if top_ks_text.strip() else [None]
@@ -592,6 +768,26 @@ def run_generator_app() -> None:
         grid_error = ""
     except ComparisonConfigurationError as error:
         configs = []; grid_error = str(error); st.error(grid_error)
+
+    local_context_error = ""
+    for adapter in selected_local_adapters:
+        context_limit = local_model_context_limit(adapter.base_model_id)
+        if int(max_tokens) >= context_limit:
+            local_context_error = (
+                f"Max output tokens must be below {context_limit:,} for "
+                f"{adapter.label}."
+            )
+            st.error(local_context_error)
+            break
+    if (
+        not local_context_error
+        and selected_iriis_gpt2_specs
+        and int(max_tokens) >= 512
+    ):
+        local_context_error = (
+            "Max output tokens must be below 512 for IRIIS Nepali GPT-2."
+        )
+        st.error(local_context_error)
 
     limiter_cols = st.columns(3)
     per_minute = limiter_cols[0].number_input("Max requests / minute / model", 1, 1_000, 20)
@@ -601,11 +797,30 @@ def run_generator_app() -> None:
     if limiter_cols[2].button("Reset local rate counters"):
         ledger.reset(); st.success("Local counters reset. Provider-side limits are unchanged.")
     for name in backend_names:
-        scope = (
-            "openai:" + openai_model
-            if name == "OpenAI API"
-            else ("google-gemma:" if gemini_model.removeprefix("models/").startswith("gemma-") else "google-gemini:") + gemini_model
-        )
+        if (
+            name == GEMMA4_BASE_BACKEND_NAME
+            or name in generator_local_options
+            or name in IRIIS_GPT2_BACKEND_OPTIONS
+        ):
+            local_label = (
+                DEFAULT_GEMMA4_BASE_MODEL_ID
+                if name == GEMMA4_BASE_BACKEND_NAME
+                else (
+                    generator_local_options[name].key
+                    if name in generator_local_options
+                    else IRIIS_GPT2_BACKEND_OPTIONS[name].model_id
+                )
+            )
+            st.caption(
+                f"local:{local_label}: no API rate limit"
+            )
+            continue
+        if name == "OpenAI API":
+            scope = "openai:" + openai_model
+        elif name == GOOGLE_GEMMA_BACKEND_NAME:
+            scope = "google-gemma:" + google_gemma_model
+        else:
+            scope = "google-gemini:" + gemini_model
         minute_used, day_used = ledger.usage(scope)
         st.caption(f"{scope}: {minute_used}/{int(per_minute)} this minute · {day_used}/{int(per_day)} today (local tracker)")
     with st.expander("Saved generation runs"):
@@ -647,8 +862,29 @@ def run_generator_app() -> None:
             st.caption("No generator runs have been saved yet.")
 
     request_count = len(records) * len(backend_names) * len(configs)
-    st.info(f"This run will make {request_count} request(s): {len(records)} records × {len(backend_names)} models × {len(configs)} decoding settings.")
-    can_run = bool(records and backend_names and configs and final_prompt and output_schema and not schema_error and not grid_error)
+    local_backend_count = (
+        int(selected_local_gemma)
+        + len(selected_local_adapters)
+        + len(selected_iriis_gpt2_specs)
+    )
+    hosted_backend_count = len(backend_names) - local_backend_count
+    hosted_request_count = len(records) * hosted_backend_count * len(configs)
+    local_generation_count = request_count - hosted_request_count
+    st.info(
+        f"This run will perform {request_count} generation(s): "
+        f"{hosted_request_count} hosted API request(s) and "
+        f"{local_generation_count} local generation(s)."
+    )
+    can_run = bool(
+        records
+        and backend_names
+        and configs
+        and final_prompt
+        and output_schema
+        and not schema_error
+        and not grid_error
+        and not local_context_error
+    )
     if st.button("Generate dataset", type="primary", disabled=not can_run):
         try:
             backends = []
@@ -660,6 +896,59 @@ def run_generator_app() -> None:
                 key = os.getenv("GEMINI_API_KEY", "")
                 if not key: raise ComparisonConfigurationError("GEMINI_API_KEY is missing. Add it to .env and restart Streamlit.")
                 backends.append(cached_google_generator_backend(gemini_model, secret_fingerprint(key), key))
+            if GOOGLE_GEMMA_BACKEND_NAME in backend_names:
+                key = os.getenv("GEMINI_API_KEY", "")
+                if not key: raise ComparisonConfigurationError("GEMINI_API_KEY is missing. Add it to .env and restart Streamlit.")
+                backends.append(cached_google_generator_backend(google_gemma_model, secret_fingerprint(key), key))
+            if selected_local_gemma:
+                hf_token = os.getenv("HF_TOKEN", "")
+                backends.append(
+                    Gemma4BaseBackend(
+                        cached_generator_gemma4_base(
+                            DEFAULT_GEMMA4_BASE_MODEL_ID,
+                            DEFAULT_GEMMA4_BASE_REVISION,
+                            local_model_device,
+                            local_model_dtype,
+                            local_model_files_only,
+                            secret_fingerprint(hf_token),
+                            hf_token,
+                        )
+                    )
+                )
+            if selected_iriis_gpt2_specs:
+                hf_token = os.getenv("HF_TOKEN", "")
+                for iriis_spec in selected_iriis_gpt2_specs:
+                    backends.append(
+                        IRIISGPT2Backend(
+                            cached_generator_iriis_gpt2(
+                                iriis_spec.key,
+                                local_model_device,
+                                local_model_dtype,
+                                local_model_files_only,
+                                secret_fingerprint(hf_token),
+                                hf_token,
+                            )
+                        )
+                    )
+            if selected_local_adapters:
+                hf_token = os.getenv("HF_TOKEN", "")
+                for adapter in selected_local_adapters:
+                    backends.append(
+                        LocalPeftBackend(
+                            cached_generator_local_adapter(
+                                adapter.key,
+                                adapter.label,
+                                str(adapter.path),
+                                adapter.base_model_id,
+                                local_model_device,
+                                local_model_dtype,
+                                local_model_quantization,
+                                local_model_files_only,
+                                secret_fingerprint(hf_token),
+                                hf_token,
+                            )
+                        )
+                    )
             generated = []
             total = len(records) * len(backends) * len(configs)
             completed = 0
@@ -692,15 +981,19 @@ def run_generator_app() -> None:
                             f"{record_number}/{len(records)} · {backend.label} · "
                             f"{config.name}"
                         )
-                        ledger.wait_and_record(
-                            backend.label,
-                            int(per_minute),
-                            int(per_day),
-                            on_wait=lambda seconds, label=backend.label: live_status.warning(
-                                f"Local rate limit reached for {label}. "
-                                f"Waiting about {seconds:.1f} seconds…"
-                            ),
-                        )
+                        if not isinstance(
+                            backend,
+                            (Gemma4BaseBackend, IRIISGPT2Backend, LocalPeftBackend),
+                        ):
+                            ledger.wait_and_record(
+                                backend.label,
+                                int(per_minute),
+                                int(per_day),
+                                on_wait=lambda seconds, label=backend.label: live_status.warning(
+                                    f"Local rate limit reached for {label}. "
+                                    f"Waiting about {seconds:.1f} seconds…"
+                                ),
+                            )
                         started = time.perf_counter()
                         try:
                             output, error = backend.generate(prompt, config, system_prompt), ""
@@ -763,6 +1056,22 @@ def run_generator_app() -> None:
                             "backends": backend_names,
                             "openai_model": openai_model,
                             "gemini_model": gemini_model,
+                            "google_gemma_model": google_gemma_model,
+                            "local_gemma_model": (
+                                DEFAULT_GEMMA4_BASE_MODEL_ID
+                                if selected_local_gemma
+                                else None
+                            ),
+                            "local_adapters": [
+                                adapter.key for adapter in selected_local_adapters
+                            ],
+                            "iriis_gpt2_models": [
+                                spec.key for spec in selected_iriis_gpt2_specs
+                            ],
+                            "local_model_device": local_model_device,
+                            "local_model_dtype": local_model_dtype,
+                            "local_model_quantization": local_model_quantization,
+                            "local_model_files_only": local_model_files_only,
                             "decoding_grid": [config.__dict__ for config in configs],
                             "source_cleaning": cleaning_metadata,
                             "requests_per_minute_per_model": int(per_minute),

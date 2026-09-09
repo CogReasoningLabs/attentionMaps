@@ -32,7 +32,8 @@ the sampled reference.
 
 No model is selected automatically. Select one or more of Gemini 3.6 Flash,
 Gemini 3.5 Flash-Lite, Google-hosted Gemma, configured Hugging Face models,
-local GPT-2 LoRA, local TinyLlama QLoRA, HimalayaGPT 0.5B Instruct, or Arkios
+local GPT-2 LoRA, local TinyLlama QLoRA, local Llama 2 7B QLoRA,
+IRIIS GPT-2 Nepali 124M base or instruct, HimalayaGPT 0.5B Instruct, or Arkios
 1B Chat, or the `google/gemma-4-E2B` base checkpoint before running. Only
 selected models run. Local adapter choices use
 weights beneath `finetuned_models/`; Arkios and HimalayaGPT use Hugging Face
@@ -82,11 +83,11 @@ python scripts/nepali_inference_compare.py \
   --output artifacts/nepali_inference_results.csv
 ```
 
-Run both repository finetuned models on the same inputs with:
+Run the repository finetuned models on the same inputs with:
 
 ```bash
 python scripts/nepali_inference_compare.py \
-  --models local-gpt2 local-tinyllama \
+  --models local-gpt2 local-tinyllama local-llama7b \
   --input-file samples.txt \
   --temperatures 0.2 0.7 \
   --top-p 0.95 \
@@ -94,12 +95,21 @@ python scripts/nepali_inference_compare.py \
   --max-new-tokens 128 \
   --local-device auto \
   --local-dtype auto \
+  --local-quantization auto \
   --output artifacts/local_finetuned_comparison.csv
 ```
 
 Use `--local-files-only` to prohibit base-weight downloads. The local choices
-are `local-gpt2` and `local-tinyllama`; `--local-models-root` overrides the
-default `finetuned_models/` directory.
+are `local-gpt2`, `local-tinyllama`, and `local-llama7b`;
+`--local-models-root` overrides the default `finetuned_models/` directory.
+Llama 2 is gated, so accept its Hugging Face license and provide `HF_TOKEN`
+when its base weights are not already cached.
+With `--local-quantization auto`, 7B and larger PEFT base models use CUDA
+4-bit NF4, while smaller adapters remain unquantized. Quantized loading requires
+a CUDA-visible PyTorch environment and `bitsandbytes`; missing prerequisites
+stop before the full model is loaded instead of falling back to CPU float32.
+If the quantized model exceeds VRAM, overflow modules may be dispatched in full
+precision to CPU or `data/cache/model_offload/` on disk.
 
 Run the two standalone instruction/chat models with:
 
@@ -153,8 +163,8 @@ Use `--google-gemma-model` to change the Google-hosted Gemma model.
   and Gemma support it; Hugging Face chat completion forwards it as a
   provider-specific option, so a provider may reject it.
 - `max_new_tokens` limits completion length and defaults to 256. Local GPT-2
-  requires it below 1,024, TinyLlama and HimalayaGPT below 2,048, and Arkios
-  below 4,096; prompt tokens also occupy that context window.
+  requires it below 1,024, TinyLlama and HimalayaGPT below 2,048, and Llama 2
+  7B and Arkios below 4,096; prompt tokens also occupy that context window.
 - `seed` requests repeatability, although hosted APIs do not guarantee bitwise
   identical output.
 - `thinking_level` controls hidden reasoning by Google models. Thinking and

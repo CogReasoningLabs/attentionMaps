@@ -38,6 +38,7 @@ attention_maps/
 │   ├── arkios.py                 Arkios 1B Chat loading and generation
 │   ├── himalayagpt.py            HimalayaGPT 0.5B IT loading and generation
 │   ├── gemma4_base.py             Google Gemma 4 E2B base loading and generation
+│   ├── iriis_gpt2.py               IRIIS Nepali GPT-2 base/instruct local generation
 │   ├── nepberta.py               optional masked-LM diagnostics
 │   └── himalaya_gemma.py         Gemma 4 base + PEFT adapter generation
 ├── evaluation/

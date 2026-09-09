@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -86,7 +87,7 @@ class LocalComparisonResult:
 
 @dataclass
 class LocalModelPair:
-    """One base model with a local PEFT adapter attached."""
+    """One base model, optionally with its local PEFT adapter attached."""
 
     spec: LocalAdapterSpec
     model: Any
@@ -94,12 +95,53 @@ class LocalModelPair:
     torch: Any
     device: str
     dtype: str
+    quantization: str = "none"
+    adapter_loaded: bool = True
 
 
 FRIENDLY_MODEL_NAMES = {
     "gpt2-alpaca-nepali-lora": "GPT-2 · Nepali Alpaca LoRA",
     "tinyllama-nepali-alpaca-qlora": "TinyLlama 1.1B · Nepali Alpaca QLoRA",
+    "ckpt-504-llama7b": "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA",
 }
+
+LOCAL_QUANTIZATION_CHOICES = ("auto", "4bit", "8bit", "none")
+DEFAULT_LOCAL_MODEL_OFFLOAD_ROOT = (
+    Path(__file__).resolve().parents[2] / "data" / "cache" / "model_offload"
+)
+
+
+def local_model_context_limit(base_model_id: str) -> int:
+    """Return the known generation context for supported local base models."""
+
+    normalized = base_model_id.lower()
+    if normalized == "gpt2":
+        return 1_024
+    if "llama-2-" in normalized:
+        return 4_096
+    if "tinyllama" in normalized:
+        return 2_048
+    return 2_048
+
+
+def local_model_quantization(base_model_id: str, requested: str = "auto") -> str:
+    """Resolve automatic quantization without loading base-model metadata."""
+
+    if requested not in LOCAL_QUANTIZATION_CHOICES:
+        raise LocalInferenceError(
+            "quantization must be auto, 4bit, 8bit, or none"
+        )
+    if requested != "auto":
+        return requested
+    parameter_sizes = re.findall(
+        r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?![a-z0-9])",
+        base_model_id.lower(),
+    )
+    return (
+        "4bit"
+        if any(float(parameter_size) >= 7 for parameter_size in parameter_sizes)
+        else "none"
+    )
 
 
 def discover_local_adapters(root: Path) -> list[LocalAdapterSpec]:
@@ -174,6 +216,20 @@ def _require_dependencies() -> tuple[Any, Any, Any, Any]:
     return torch, AutoModelForCausalLM, AutoTokenizer, PeftModel
 
 
+def _bitsandbytes_config_class() -> Any:
+    """Return the Transformers quantization config after checking the backend."""
+
+    try:
+        import bitsandbytes  # noqa: F401
+        from transformers import BitsAndBytesConfig
+    except ImportError as error:
+        raise LocalInferenceError(
+            "Quantized local inference requires bitsandbytes. Install the "
+            "project requirements in the GPU environment."
+        ) from error
+    return BitsAndBytesConfig
+
+
 def _resolve_runtime(torch: Any, device: str, dtype: str) -> tuple[str, Any, str]:
     if device not in {"auto", "cpu", "cuda"}:
         raise LocalInferenceError("device must be auto, cpu, or cuda")
@@ -216,14 +272,48 @@ def load_local_model_pair(
     *,
     device: str = "auto",
     dtype: str = "auto",
+    quantization: str = "auto",
+    offload_folder: str | Path | None = None,
+    load_adapter: bool = True,
     local_files_only: bool = False,
+    token: str | None = None,
 ) -> LocalModelPair:
-    """Load a base causal LM and attach its local inference-only PEFT adapter."""
+    """Load a base causal LM and optionally attach its inference-only adapter."""
 
     torch, AutoModelForCausalLM, AutoTokenizer, PeftModel = _require_dependencies()
     resolved_device, resolved_dtype, dtype_name = _resolve_runtime(
         torch, device, dtype
     )
+    resolved_quantization = local_model_quantization(
+        spec.base_model_id, quantization
+    )
+    quantization_config = None
+    if resolved_quantization != "none":
+        if resolved_device != "cuda":
+            raise LocalInferenceError(
+                f"{spec.label} defaults to {resolved_quantization} quantization, "
+                "which requires a CUDA GPU. CUDA is unavailable, so the full "
+                "base model was not loaded. Use a GPU-enabled environment or a "
+                "merged GGUF model for CPU inference."
+            )
+        BitsAndBytesConfig = _bitsandbytes_config_class()
+        if resolved_quantization == "4bit":
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
+                bnb_4bit_quant_type="nf4",
+                # Nested quantization's scalar offset can remain on the meta
+                # device when PEFT redispatches disk-offloaded layers. Plain
+                # NF4 is slightly larger but is stable for adapter inference.
+                bnb_4bit_use_double_quant=False,
+                bnb_4bit_compute_dtype=resolved_dtype,
+            )
+        else:
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
+            )
+    resolved_offload_folder: Path | None = None
     try:
         base_model_source = spec.base_model_id
         if local_files_only:
@@ -232,22 +322,82 @@ def load_local_model_pair(
             base_model_source = snapshot_download(
                 repo_id=spec.base_model_id,
                 local_files_only=True,
+                token=token or None,
             )
         tokenizer = AutoTokenizer.from_pretrained(
-            str(spec.path), local_files_only=True
+            str(spec.path), local_files_only=True, token=token or None
         )
+        model_load_kwargs: dict[str, Any] = {
+            "dtype": resolved_dtype,
+            "local_files_only": bool(local_files_only),
+            "low_cpu_mem_usage": True,
+            "token": token or None,
+        }
+        if quantization_config is not None:
+            resolved_offload_folder = Path(
+                offload_folder
+                or DEFAULT_LOCAL_MODEL_OFFLOAD_ROOT / spec.key
+            ).expanduser().resolve()
+            resolved_offload_folder.mkdir(parents=True, exist_ok=True)
+            model_load_kwargs.update(
+                quantization_config=quantization_config,
+                device_map="auto",
+                offload_folder=str(resolved_offload_folder),
+                offload_state_dict=True,
+            )
         base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_source,
-            dtype=resolved_dtype,
-            local_files_only=True if local_files_only else False,
+            base_model_source, **model_load_kwargs
         )
-        base_model.to(resolved_device)
-        model = PeftModel.from_pretrained(
-            base_model,
-            str(spec.path),
-            is_trainable=False,
-            local_files_only=True,
-        )
+        if quantization_config is None:
+            base_model.to(resolved_device)
+        if load_adapter:
+            integrated_adapter_loader = getattr(base_model, "load_adapter", None)
+            if callable(integrated_adapter_loader):
+                # Transformers 5 loads adapter tensors with the same device map
+                # and disk-offload index as the base checkpoint. This avoids a
+                # second PEFT redispatch, which tries to copy disk placeholders
+                # out of the meta device before their data is materialized.
+                adapter_load_kwargs: dict[str, Any] = {
+                    "adapter_name": "default",
+                    "low_cpu_mem_usage": True,
+                    "use_safetensors": True,
+                }
+                if resolved_offload_folder is not None:
+                    from transformers.modeling_utils import LoadStateDictConfig
+
+                    adapter_load_kwargs["load_config"] = LoadStateDictConfig(
+                        pretrained_model_name_or_path=str(spec.path),
+                        use_safetensors=True,
+                        device_map=getattr(base_model, "hf_device_map", None),
+                        disk_offload_folder=str(resolved_offload_folder),
+                        dtype=resolved_dtype,
+                    )
+                integrated_adapter_loader(str(spec.path), **adapter_load_kwargs)
+                model = base_model
+            else:
+                model = PeftModel.from_pretrained(
+                    base_model,
+                    str(spec.path),
+                    is_trainable=False,
+                    local_files_only=True,
+                    low_cpu_mem_usage=False,
+                    ephemeral_gpu_offload=quantization_config is not None,
+                    **(
+                        {
+                            "device_map": "auto",
+                            "offload_folder": str(resolved_offload_folder),
+                            "use_safetensors": True,
+                        }
+                        if resolved_offload_folder is not None
+                        else {}
+                    ),
+                )
+        else:
+            # A base-only evaluation must not inject LoRA layers. Apart from
+            # wasting memory, PEFT cannot copy adapters back out of layers that
+            # Accelerate has intentionally left on the meta device for disk
+            # offload.
+            model = base_model
     except Exception as error:
         mode = "local cache" if local_files_only else "local cache or Hugging Face Hub"
         raise LocalInferenceError(
@@ -266,6 +416,8 @@ def load_local_model_pair(
         torch=torch,
         device=resolved_device,
         dtype=dtype_name,
+        quantization=resolved_quantization,
+        adapter_loaded=load_adapter,
     )
 
 
@@ -288,7 +440,38 @@ def format_local_prompt(tokenizer: Any, prompt: str, system_prompt: str = "") ->
 
 
 def _input_device(model: Any) -> Any:
-    return next(model.parameters()).device
+    device_map = getattr(model, "hf_device_map", None)
+    if isinstance(device_map, dict):
+        for device in device_map.values():
+            if isinstance(device, int):
+                return f"cuda:{device}"
+            if str(device).startswith(("cuda", "mps", "xpu")):
+                return device
+        return "cpu"
+    for parameter in model.parameters():
+        if str(parameter.device) != "meta":
+            return parameter.device
+    raise LocalInferenceError("The loaded model has no materialized execution device")
+
+
+def _adapter_disabled(model: Any) -> Any:
+    """Return a base-only context for PEFT wrappers or Transformers adapters."""
+
+    disable_adapter = getattr(model, "disable_adapter", None)
+    if callable(disable_adapter):
+        return disable_adapter()
+    disable_adapters = getattr(model, "disable_adapters", None)
+    enable_adapters = getattr(model, "enable_adapters", None)
+    if callable(disable_adapters) and callable(enable_adapters):
+        class AdapterDisabledContext:
+            def __enter__(self) -> None:
+                disable_adapters()
+
+            def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+                enable_adapters()
+
+        return AdapterDisabledContext()
+    raise LocalInferenceError("The loaded model cannot disable its PEFT adapter")
 
 
 def _generate_variant(
@@ -339,7 +522,16 @@ def _generate_variant(
     torch.manual_seed(config.seed)
     if bundle.device == "cuda":
         torch.cuda.manual_seed_all(config.seed)
-    adapter_context = nullcontext() if use_adapter else model.disable_adapter()
+    if use_adapter and not bundle.adapter_loaded:
+        raise LocalInferenceError(
+            f"The adapter for {bundle.spec.label} was not loaded. Reload the "
+            "model with the finetuned variant enabled."
+        )
+    adapter_context = (
+        nullcontext()
+        if use_adapter or not bundle.adapter_loaded
+        else _adapter_disabled(model)
+    )
     started = time.perf_counter()
     with torch.inference_mode(), adapter_context:
         output_ids = model.generate(**inputs, **kwargs)

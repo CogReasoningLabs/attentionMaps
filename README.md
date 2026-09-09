@@ -237,8 +237,8 @@ The Kaggle OSCAR Nepali corpus is exposed through its smaller deduplicated
 explicit confirmation before downloading it. It then counts lines as a stream
 and samples from random byte offsets without loading the corpus into memory.
 
-The **Local base vs finetuned** tab discovers the final TinyLlama and GPT-2
-PEFT adapters under `finetuned_models/`. It samples an instance from the
+The **Local base vs finetuned** tab discovers the final TinyLlama, GPT-2, and
+Llama 2 7B PEFT adapters under `finetuned_models/`. It samples an instance from the
 currently selected evaluation dataset (or accepts a custom prompt), applies a
 temperature/top-p/top-k decoding grid, and displays each base-model output
 beside its finetuned output. LIMA-style `HUMAN`/`ASSISTANT` records are split
@@ -256,11 +256,12 @@ model-quality score.
 
 The **Model comparison** tab can turn the selected dataset record into a
 prompt and compare Gemini Flash, Gemini Flash-Lite, Google-hosted Gemma, the
-two local finetuned adapters, the Hugging Face `google/gemma-4-E2B` base model,
+discovered local finetuned adapters, the Hugging Face `google/gemma-4-E2B` base model,
+the local IRIIS GPT-2 Nepali 124M base and instruction-tuned checkpoints,
 HimalayaGPT 0.5B Instruct, Arkios 1B Chat, and
 Hugging Face Inference Provider models over a shared temperature/top-p/top-k
 grid. Local choices do not make an inference API request. Arkios and
-HimalayaGPT and Gemma 4 E2B each have a dedicated implementation under
+HimalayaGPT, Gemma 4 E2B, and IRIIS GPT-2 each have a dedicated implementation under
 `attention_maps/inference/`.
 Source text may come from the dataset, be entered manually, or be omitted in
 prompt-only mode. System and user prompts are configured separately, and no
@@ -272,10 +273,24 @@ require provider access or incur cost.
 The **Evaluation** tab streams bounded slices from a pinned public FLORES-200
 mirror, using the `eng_Latn` and `npi_Deva` columns from its dev or devtest
 split. `HF_TOKEN` is optional and only improves Hub rate limits. The tab compares
-the LIMA teacher (`gemini-3.5-flash-lite`), local base and finetuned adapter
-variants, HimalayaGPT, and Arkios on the same English sentences. It reports
+the LIMA teacher (`gemini-3.5-flash-lite`), Google-hosted Gemma 4 API, local
+Gemma 4 E2B base weights, local base and finetuned adapter variants,
+IRIIS GPT-2 Nepali base and instruct, HimalayaGPT, and Arkios on the same
+English sentences. It reports
 per-instance and corpus chrF++ scores, coverage, latency, and a model comparison
 chart without loading the complete benchmark into memory.
+
+The adjacent **Decoder benchmarks** tab evaluates every model through generated
+text. It includes all 13 datasets in the official IRIIS NLUE collection plus
+three decoder-oriented Nepali benchmarks: Belebele reading comprehension,
+Global-MMLU knowledge/reasoning, and XL-Sum abstractive summarization. Choose a
+task, stream a bounded slice from its pinned revision, and compare hosted models
+with local base/PEFT variants, including both IRIIS GPT-2 Nepali 124M models.
+Multiple-choice and classification tasks report
+accuracy and macro-F1, STS-B reports correlations and R², and XL-Sum reports
+ROUGE-1/2/L. The existing Evaluation tab supplies FLORES English-to-Nepali
+translation with chrF++. Published NLUE scores remain visible where available;
+GMET stays manual-review-only because its public data has no gold-answer column.
 
 ### Synthetic dataset generator
 
@@ -290,6 +305,19 @@ python -m streamlit run apps/dataset_generator.py
 Add only the provider credentials you intend to use to `.env`. The app does
 not make a request until **Generate dataset** is pressed, shows the request
 count first, and applies configurable local per-minute and per-day limits.
+Its backend selector distinguishes **Gemma 4 · Google API** from **Gemma 4
+E2B Base · Hugging Face local**; the latter runs locally after its weights are
+available.
+Local PEFT adapters, including `ckpt-504-llama7b`, appear in this selector when
+their adapter directory contains `adapter_config.json` and adapter weights.
+Set `ATTENTION_MAPS_FINETUNED_MODELS_ROOT` when the weights live outside the
+active repository checkout. PEFT quantization defaults to `auto`: 7B and larger
+base models use CUDA 4-bit NF4 loading, while smaller adapters remain
+unquantized. Install the project requirements in a GPU-enabled environment;
+large adapters stop with a clear error instead of falling back entirely to CPU
+float32. When the quantized model exceeds VRAM, Accelerate may keep overflow
+modules in full precision on CPU or spill them under
+`data/cache/model_offload/`; this is slower but avoids the dispatch failure.
 During a run, the UI shows the active model and record, live completion counts,
 the latest response, and a rolling table of recently generated records.
 Successful records can be downloaded as JSONL or CSV using the configured

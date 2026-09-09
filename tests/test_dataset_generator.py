@@ -189,5 +189,93 @@ class DatasetGeneratorPersistenceTests(unittest.TestCase):
         }
 
 
+class DatasetGeneratorAppTests(unittest.TestCase):
+    def test_inference_dropdown_includes_api_and_local_gemma(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+
+        app = AppTest.from_file(
+            Path(__file__).resolve().parents[1] / "apps/dataset_generator.py"
+        ).run(timeout=30)
+
+        model_selector = next(
+            item for item in app.multiselect if item.label == "Inference backends"
+        )
+        self.assertIn("Gemma 4 · Google API", model_selector.options)
+        self.assertIn(
+            "Gemma 4 E2B Base · Hugging Face local", model_selector.options
+        )
+        self.assertIn(
+            "IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local",
+            model_selector.options,
+        )
+        self.assertIn(
+            "IRIIS GPT-2 Nepali 124M Base · Hugging Face local",
+            model_selector.options,
+        )
+        model_selector.set_value(
+            ["IRIIS GPT-2 Instruct Nepali 124M · Hugging Face local"]
+        ).run(timeout=30)
+        max_tokens = next(
+            item for item in app.number_input if item.label == "Max output tokens"
+        )
+        self.assertEqual(max_tokens.value, 256)
+        self.assertTrue(
+            any(
+                item.label == "Local model device"
+                for item in app.selectbox
+            )
+        )
+
+    def test_inference_dropdown_discovers_llama7b_checkpoint(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            checkpoint = Path(temporary_directory) / "ckpt-504-llama7b"
+            checkpoint.mkdir()
+            (checkpoint / "adapter_config.json").write_text(
+                json.dumps(
+                    {
+                        "base_model_name_or_path": (
+                            "meta-llama/Llama-2-7b-chat-hf"
+                        )
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (checkpoint / "adapter_model.safetensors").touch()
+            with patch.dict(
+                "os.environ",
+                {"ATTENTION_MAPS_FINETUNED_MODELS_ROOT": temporary_directory},
+            ):
+                app = AppTest.from_file(
+                    Path(__file__).resolve().parents[1]
+                    / "apps/dataset_generator.py"
+                ).run(timeout=30)
+                model_selector = next(
+                    item
+                    for item in app.multiselect
+                    if item.label == "Inference backends"
+                )
+                self.assertIn(
+                    "Finetuned · Llama 2 7B Chat · Nepali Multi-Dataset QLoRA",
+                    model_selector.options,
+                )
+                model_selector.set_value(
+                    ["Finetuned · Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"]
+                ).run(timeout=30)
+                quantization_selector = next(
+                    item
+                    for item in app.selectbox
+                    if item.label == "PEFT quantization"
+                )
+                self.assertEqual(quantization_selector.value, "auto")
+
+
 if __name__ == "__main__":
     unittest.main()
