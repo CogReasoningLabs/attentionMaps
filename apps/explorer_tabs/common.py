@@ -15,6 +15,7 @@ from attention_maps.eda.contracts import (
 )
 from attention_maps.eda.pipeline import analyze_records as analyze_eda_records
 from attention_maps.eda.reporting import write_survey_report
+from attention_maps.eda.sampling import fold_seed, plan_repeated_sampling
 from attention_maps.evaluation.flores import (
     FLORES_DATASET_ID,
     FLORES_SPLIT_SIZES,
@@ -186,6 +187,7 @@ __all__ = [
     "find_devanagari_font",
     "find_latin_font",
     "find_manifest",
+    "fold_seed",
     "font_supports_devanagari",
     "hashlib",
     "json",
@@ -197,6 +199,7 @@ __all__ = [
     "parse_model_ids",
     "parse_number_list",
     "parse_stopwords",
+    "plan_repeated_sampling",
     "preview_records",
     "published_baseline_rows",
     "render_full_record",

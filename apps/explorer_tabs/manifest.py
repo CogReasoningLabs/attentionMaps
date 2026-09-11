@@ -16,7 +16,7 @@ def render_manifest_tab(*, st: Any, spec: Any, data_root: Path) -> None:
     manifest_path = None if remote_dataset else find_manifest(spec, data_root)
     if manifest_path is None:
         st.info(
-            "Remote dataset metadata is shown in the Schema tab."
+            "Remote dataset metadata is shown above in this tab."
             if remote_dataset
             else "No associated manifest was found."
         )

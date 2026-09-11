@@ -248,6 +248,14 @@ TEXT_FIELD_NAMES = (
     "response",
     "chosen",
     "rejected",
+    "tweet",
+    "sentence",
+    "word",
+    "review",
+    "question",
+    "answer",
+    "instruction",
+    "output",
 )
 DEFAULT_WORDCLOUD_STOPWORDS = (
     "अनि",

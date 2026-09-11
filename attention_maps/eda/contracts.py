@@ -22,6 +22,7 @@ class DatasetSpec:
     text_columns: tuple[str, ...] = ()
     source_columns: tuple[str, ...] = ()
     sample_size: int | None = None
+    population_rows: int | None = None
 
     def __post_init__(self) -> None:
         if not _SAFE_KEY.fullmatch(self.key):
@@ -34,6 +35,8 @@ class DatasetSpec:
             raise ValueError("dataset split cannot be empty")
         if self.sample_size is not None and self.sample_size <= 0:
             raise ValueError("dataset sample_size must be positive")
+        if self.population_rows is not None and self.population_rows <= 0:
+            raise ValueError("dataset population_rows must be positive")
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "DatasetSpec":
@@ -48,6 +51,11 @@ class DatasetSpec:
             sample_size=(
                 int(value["sample_size"])
                 if value.get("sample_size") is not None
+                else None
+            ),
+            population_rows=(
+                int(value["population_rows"])
+                if value.get("population_rows") is not None
                 else None
             ),
         )
@@ -65,8 +73,15 @@ class AnalysisConfig:
     reservoir_size: int = 10_000
     max_vocabulary: int = 500_000
     top_tokens: int = 30
-    near_duplicate_distance: int = 3
-    simhash_bands: int = 8
+    dedup_normalization: str = "NFC"
+    dedup_lowercase: bool = True
+    dedup_collapse_whitespace: bool = True
+    minhash_shingle_size: int = 5
+    minhash_permutations: int = 128
+    minhash_bands: int = 16
+    near_duplicate_threshold: float = 0.80
+    boilerplate_min_documents: int = 3
+    boilerplate_min_characters: int = 40
     ngram_orders: tuple[int, ...] = (2, 3, 4)
     max_ngrams: int = 250_000
     top_ngrams: int = 25
@@ -84,7 +99,11 @@ class AnalysisConfig:
             "reservoir_size": self.reservoir_size,
             "max_vocabulary": self.max_vocabulary,
             "top_tokens": self.top_tokens,
-            "simhash_bands": self.simhash_bands,
+            "minhash_shingle_size": self.minhash_shingle_size,
+            "minhash_permutations": self.minhash_permutations,
+            "minhash_bands": self.minhash_bands,
+            "boilerplate_min_documents": self.boilerplate_min_documents,
+            "boilerplate_min_characters": self.boilerplate_min_characters,
             "max_ngrams": self.max_ngrams,
             "top_ngrams": self.top_ngrams,
             "max_pattern_tokens_per_document": self.max_pattern_tokens_per_document,
@@ -99,10 +118,14 @@ class AnalysisConfig:
             raise ValueError("shuffle_buffer_size cannot be negative")
         if not 0 <= self.min_devanagari_ratio <= 1:
             raise ValueError("min_devanagari_ratio must be in [0, 1]")
-        if not 0 <= self.near_duplicate_distance <= 16:
-            raise ValueError("near_duplicate_distance must be in [0, 16]")
-        if 64 % self.simhash_bands:
-            raise ValueError("simhash_bands must divide 64")
+        if self.dedup_normalization not in {"NFC", "NFKC"}:
+            raise ValueError("dedup_normalization must be NFC or NFKC")
+        if self.minhash_permutations % self.minhash_bands:
+            raise ValueError("minhash_bands must divide minhash_permutations")
+        if not 0 < self.near_duplicate_threshold <= 1:
+            raise ValueError("near_duplicate_threshold must be in (0, 1]")
+        if self.boilerplate_min_documents < 2:
+            raise ValueError("boilerplate_min_documents must be at least 2")
         if not self.ngram_orders:
             raise ValueError("ngram_orders cannot be empty")
         if len(set(self.ngram_orders)) != len(self.ngram_orders):
@@ -163,6 +186,8 @@ class DatasetSummary:
     config_name: str | None
     split: str
     requested_revision: str | None
+    population_rows: int | None
+    population_coverage_pct: float | None
     sample_limit: int
     seed: int
     rows_seen: int
@@ -187,6 +212,11 @@ class DatasetSummary:
     p95_line_characters: float
     maximum_line_characters: int
     average_devanagari_ratio: float
+    script_category: str
+    devanagari_letter_share_pct: float
+    latin_letter_share_pct: float
+    other_letter_share_pct: float
+    romanized_latin_token_share_pct: float
     devanagari_clean_rows: int
     devanagari_clean_ratio_pct: float
     quality_pass_rows: int
@@ -194,6 +224,18 @@ class DatasetSummary:
     exact_duplicate_rows: int
     near_duplicate_rows: int
     duplicate_ratio_pct: float
+    dedup_hash_algorithm: str
+    dedup_normalization: str
+    dedup_lowercase: bool
+    dedup_collapse_whitespace: bool
+    minhash_shingle_size: int
+    minhash_permutations: int
+    minhash_bands: int
+    near_duplicate_threshold: float
+    boilerplate_unique_paragraphs: int
+    boilerplate_paragraph_occurrences: int
+    boilerplate_affected_rows: int
+    boilerplate_affected_ratio_pct: float
     total_tokens: int
     tracked_vocabulary: int
     type_token_ratio: float

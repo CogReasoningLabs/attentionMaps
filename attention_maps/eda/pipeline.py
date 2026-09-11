@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping
 
@@ -16,16 +16,22 @@ from attention_maps.eda.contracts import (
     SurveyPlan,
     SurveyRun,
 )
+from attention_maps.eda.deduplication import (
+    DeduplicationConfig,
+    MultiStageDeduplicator,
+)
+from attention_maps.eda.script import (
+    ScriptEvidence,
+    classify_script_evidence,
+    script_evidence,
+)
 from attention_maps.eda.text import (
     devanagari_ratio,
     extract_source,
     extract_text,
-    hamming_distance,
     line_character_lengths,
     normalize_text,
     sentence_token_lengths,
-    simhash,
-    stable_text_digest,
     strip_nepali_suffix,
     token_ngrams,
     tokenize,
@@ -73,32 +79,6 @@ class _BoundedCounter:
             self.truncated = True
 
 
-class _NearDuplicateIndex:
-    """Sublinear candidate lookup using fixed SimHash bands."""
-
-    def __init__(self, bands: int, maximum_distance: int):
-        self.bands = bands
-        self.maximum_distance = maximum_distance
-        self.band_width = 64 // bands
-        self.mask = (1 << self.band_width) - 1
-        self.buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
-
-    def contains_near(self, fingerprint: int) -> bool:
-        candidates: set[int] = set()
-        for band in range(self.bands):
-            value = (fingerprint >> (band * self.band_width)) & self.mask
-            candidates.update(self.buckets[(band, value)])
-        return any(
-            hamming_distance(fingerprint, candidate) <= self.maximum_distance
-            for candidate in candidates
-        )
-
-    def add(self, fingerprint: int) -> None:
-        for band in range(self.bands):
-            value = (fingerprint >> (band * self.band_width)) & self.mask
-            self.buckets[(band, value)].append(fingerprint)
-
-
 def analyze_records(
     spec: DatasetSpec,
     records: Iterable[Mapping[str, Any]],
@@ -128,9 +108,20 @@ def analyze_records(
         for token in tokenize(term)
     }
     sources: Counter[str] = Counter()
-    exact_hashes: set[bytes] = set()
-    near_index = _NearDuplicateIndex(
-        config.simhash_bands, config.near_duplicate_distance
+    aggregate_script_evidence = ScriptEvidence()
+    deduplication = MultiStageDeduplicator(
+        DeduplicationConfig(
+            normalization=config.dedup_normalization,
+            lowercase=config.dedup_lowercase,
+            collapse_whitespace=config.dedup_collapse_whitespace,
+            shingle_size=config.minhash_shingle_size,
+            minhash_permutations=config.minhash_permutations,
+            minhash_bands=config.minhash_bands,
+            near_duplicate_threshold=config.near_duplicate_threshold,
+            boilerplate_min_documents=config.boilerplate_min_documents,
+            boilerplate_min_characters=config.boilerplate_min_characters,
+            seed=config.seed,
+        )
     )
 
     rows_seen = usable_rows = missing_text_rows = 0
@@ -150,6 +141,8 @@ def analyze_records(
             missing_text_rows += 1
             continue
         normalized = normalize_text(text)
+        if normalized:
+            aggregate_script_evidence += script_evidence(normalized)
         tokens = tokenize(normalized)
         if not normalized or not tokens:
             missing_text_rows += 1
@@ -211,15 +204,11 @@ def analyze_records(
             source_metadata_rows += 1
             sources[source] += 1
 
-        digest = stable_text_digest(normalized)
-        if digest in exact_hashes:
+        duplicate = deduplication.observe(text)
+        if duplicate.exact_duplicate:
             exact_duplicate_rows += 1
-        else:
-            exact_hashes.add(digest)
-            fingerprint = simhash(tokens)
-            if near_index.contains_near(fingerprint):
-                near_duplicate_rows += 1
-            near_index.add(fingerprint)
+        elif duplicate.near_duplicate:
+            near_duplicate_rows += 1
 
         if progress and rows_seen % 1_000 == 0:
             progress(spec.key, "analyzing", rows_seen)
@@ -234,11 +223,14 @@ def analyze_records(
     character_values = [sample.characters for sample in samples]
     token_values = [sample.tokens for sample in samples]
     duplicate_rows = exact_duplicate_rows + near_duplicate_rows
+    boilerplate = deduplication.boilerplate_summary()
     dominant_source, dominant_count = (
         sources.most_common(1)[0] if sources else (None, 0)
     )
     warnings: list[str] = []
-    if rows_seen == sample_limit:
+    if rows_seen == sample_limit and (
+        spec.population_rows is None or rows_seen < spec.population_rows
+    ):
         warnings.append("Metrics describe a bounded sample, not the complete dataset.")
     if vocabulary.truncated:
         warnings.append(
@@ -267,6 +259,12 @@ def analyze_records(
         config_name=spec.config_name,
         split=spec.split,
         requested_revision=spec.revision,
+        population_rows=spec.population_rows,
+        population_coverage_pct=(
+            _percent(rows_seen, spec.population_rows)
+            if spec.population_rows is not None
+            else None
+        ),
         sample_limit=sample_limit,
         seed=config.seed,
         rows_seen=rows_seen,
@@ -291,6 +289,32 @@ def analyze_records(
         p95_line_characters=_quantile(list(line_samples), 0.95),
         maximum_line_characters=maximum_line_characters,
         average_devanagari_ratio=_safe_ratio(devanagari_total, usable_rows),
+        script_category=classify_script_evidence(aggregate_script_evidence),
+        devanagari_letter_share_pct=round(
+            100
+            * aggregate_script_evidence.letter_share(
+                aggregate_script_evidence.devanagari_letters
+            ),
+            4,
+        ),
+        latin_letter_share_pct=round(
+            100
+            * aggregate_script_evidence.letter_share(
+                aggregate_script_evidence.latin_letters
+            ),
+            4,
+        ),
+        other_letter_share_pct=round(
+            100
+            * aggregate_script_evidence.letter_share(
+                aggregate_script_evidence.other_letters
+            ),
+            4,
+        ),
+        romanized_latin_token_share_pct=round(
+            100 * aggregate_script_evidence.romanized_token_share,
+            4,
+        ),
         devanagari_clean_rows=devanagari_clean_rows,
         devanagari_clean_ratio_pct=_percent(devanagari_clean_rows, usable_rows),
         quality_pass_rows=quality_pass_rows,
@@ -298,6 +322,20 @@ def analyze_records(
         exact_duplicate_rows=exact_duplicate_rows,
         near_duplicate_rows=near_duplicate_rows,
         duplicate_ratio_pct=_percent(duplicate_rows, usable_rows),
+        dedup_hash_algorithm="SHA-256",
+        dedup_normalization=config.dedup_normalization,
+        dedup_lowercase=config.dedup_lowercase,
+        dedup_collapse_whitespace=config.dedup_collapse_whitespace,
+        minhash_shingle_size=config.minhash_shingle_size,
+        minhash_permutations=config.minhash_permutations,
+        minhash_bands=config.minhash_bands,
+        near_duplicate_threshold=config.near_duplicate_threshold,
+        boilerplate_unique_paragraphs=boilerplate.unique_repeated_paragraphs,
+        boilerplate_paragraph_occurrences=boilerplate.repeated_paragraph_occurrences,
+        boilerplate_affected_rows=boilerplate.affected_documents,
+        boilerplate_affected_ratio_pct=_percent(
+            boilerplate.affected_documents, usable_rows
+        ),
         total_tokens=total_tokens,
         tracked_vocabulary=len(vocabulary.counts),
         type_token_ratio=_safe_ratio(len(vocabulary.counts), total_tokens),

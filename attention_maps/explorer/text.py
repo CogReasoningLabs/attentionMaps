@@ -32,6 +32,17 @@ def format_bytes(size: int) -> str:
     return f"{value:.1f} TiB"
 
 
+def format_decimal_bytes(size: int) -> str:
+    """Format storage bytes with the decimal units used by the Hugging Face UI."""
+
+    value = float(size)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if value < 1000 or unit == "TB":
+            return f"{value:.1f} {unit}"
+        value /= 1000
+    return f"{value:.1f} TB"
+
+
 def preview_value(value: Any, max_characters: int) -> Any:
     if isinstance(value, (list, tuple, dict)):
         value = json.dumps(value, ensure_ascii=False, default=str)
@@ -58,17 +69,41 @@ def preview_records(
 def text_columns(schema: Sequence[dict[str, str]]) -> list[str]:
     """Return columns that can plausibly contain natural-language text."""
 
-    preferred = [
-        name
-        for name in TEXT_FIELD_NAMES
-        if any(field["column"] == name for field in schema)
-    ]
-    other_strings = [
+    string_columns = [
         field["column"]
         for field in schema
         if "string" in field["type"].lower()
-        and field["column"] not in preferred
         and not field["column"].startswith(VIEWER_PREFIX)
+    ]
+    actual_by_casefold = {column.casefold(): column for column in string_columns}
+    preferred = list(
+        dict.fromkeys(
+            actual_by_casefold[name.casefold()]
+            for name in TEXT_FIELD_NAMES
+            if name.casefold() in actual_by_casefold
+        )
+    )
+    metadata_names = {
+        "id",
+        "uuid",
+        "guid",
+        "index",
+        "row_id",
+        "record_id",
+        "label",
+        "class",
+        "category",
+        "sentiment",
+        "source",
+        "url",
+        "domain",
+        "language",
+        "language_code",
+    }
+    other_strings = [
+        column
+        for column in string_columns
+        if column not in preferred and column.casefold() not in metadata_names
     ]
     return preferred + other_strings
 
@@ -216,6 +251,7 @@ def eda_dataset_spec(
     text_fields: Sequence[str],
     source_fields: Sequence[str],
     sample_size: int,
+    population_rows: int | None = None,
 ) -> EDADatasetSpec:
     """Convert a viewer dataset into the stable EDA pipeline contract."""
 
@@ -230,6 +266,7 @@ def eda_dataset_spec(
         text_columns=tuple(text_fields),
         source_columns=tuple(source_fields),
         sample_size=sample_size,
+        population_rows=population_rows,
     )
 
 

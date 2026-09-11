@@ -25,6 +25,8 @@ dist/
 .env
 .env.*
 !.env.example
+/credentials.json
+/.google-drive-token.json
 .dataset_generator_rate_limits.sqlite3
 .dataset_generator.sqlite3
 

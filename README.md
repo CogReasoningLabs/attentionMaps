@@ -35,18 +35,16 @@ supervised finetuning are documented in
 
 ### 1. Dataset exploration application — active
 
-Use this first to inspect local and remote datasets, review provider/purpose
-taxonomy, examine complete records, run bounded EDA, compare tokenizers and
-models, and evaluate decoder outputs. Synthetic pipeline artifacts are kept in
-a separate workspace inside the app rather than mixed into the corpus catalog.
+Use this first to select local or remote data, verify a bounded source sample,
+run the gated cleaning pipeline, and perform EDA only on its preprocessed
+output. Synthetic pipeline artifacts remain separate from the corpus catalog.
 
 ```bash
 .venv/bin/python -m streamlit run apps/dataset_explorer.py
 ```
 
-Primary outputs are dataset evidence: schemas, deterministic samples, quality
-metrics, duplicate estimates, n-grams, co-occurrence graphs, plots, and
-reproducible EDA reports. See
+Primary outputs are clean workspace datasets, deduplication audits, manifests,
+and a fixed set of reproducible post-preprocessing EDA reports. See
 [Path 1 detailed guide](#path-1-detailed-guide--dataset-exploration-application).
 
 ### 2. Synthetic dataset generation application — active foundation
@@ -128,6 +126,8 @@ Project-level documentation:
   survey work log
 - [`docs/eda-cleaning-notes.md`](docs/eda-cleaning-notes.md) — EDA metrics and
   the planned auditable cleaning/deduplication logic shown in the UI
+- [`docs/google-drive-workspace.md`](docs/google-drive-workspace.md) — team
+  workspace uploads, credentials, resumable transfers, and size buckets
 - [`docs/nepali-pretraining-workflow.md`](docs/nepali-pretraining-workflow.md) —
   raw data through tokenization and decoder training
 - [`docs/model-inference-and-attention.md`](docs/model-inference-and-attention.md) —
@@ -278,28 +278,20 @@ HimalayaGPT's serialized tokenizer requires `tiktoken`. The app disables
 Streamlit's source watcher because its inspection of Transformers can otherwise
 import optional `torchvision` modules in this text-only application.
 
-The app discovers the present Nepali datasets beneath `data/`, displays schema
-and manifest information, draws uniform random records with a full-text view,
-creates configurable Unicode-aware word clouds, and runs bounded EDA from the
-**Survey EDA** tab. The EDA view provides live progress, detailed metric tables,
-document-size and structure distributions, 2/3/4-grams, term co-occurrence
-networks, and downloadable CSV/JSON evidence. The adjacent **EDA & cleaning
-notes** tab documents metric interpretation, existing duplicate screening, and
-the planned auditable cleaning/deduplication workflow. Provider/lineage and
-purpose filters keep publisher, upstream source, adaptation, and training use
-independent; uncertain entries remain explicitly unclassified. Pipeline
-selection is limited to raw, cleaned, preprocessed, and tokenized data. Nepali clouds use NFC/BOM-safe
-stopword matching, conservative attached-postposition stripping, Devanagari-only
-glyph input, and a verified Noto/Lohit-compatible font. Both Streamlit and the
-CLI load the canonical list from `configs/eda/stopwords.txt`. The ordinary
-catalog is separated from the **Synthetic data generation** workspace. That
-workspace currently exposes the LIMA translation family and its generated
-Nepali and original-English variants through a reusable pipeline card. Use the
-custom-path option for a Parquet file or directory elsewhere.
+The app is intentionally limited to four tabs: **WORKSPACE**, **Source sample**,
+**Inference**, and **Metadata**. WORKSPACE enforces Sampling → NFC normalization → multi-stage
+deduplication → EDA. EDA is unavailable until preprocessing succeeds and shows
+only the fixed corpus-profile, document-size, text-structure, n-gram, and
+residual-duplicate visualizations plus a fixed-default WordCloud. Source sample is a bounded verification view;
+Inference contains one selector for model comparison, local base-vs-finetuned,
+translation evaluation, or decoder benchmarks. Metadata contains schema and
+manifest evidence. Use the custom-path option for a Parquet file or directory
+elsewhere.
+
 The dataset dropdown also includes the remote
 `himalaya-ai/nepali-sft-dataset`. Its 3.8 GB training split is never downloaded
-as one in-memory object: schema metrics come from streaming metadata, while
-records, word clouds, and inference prompts use a bounded shuffle buffer.
+as one in-memory object: schema metrics come from streaming metadata and
+workspace samples use a bounded shuffle buffer.
 Aya's 4,002-row Nepali training view is also available with the filter fixed to
 `language_code=npi`. Hugging Face's Parquet predicate filtering is applied in
 streaming mode, so multilingual rows are not loaded into the Streamlit process.
@@ -314,61 +306,6 @@ The Kaggle OSCAR Nepali corpus is exposed through its smaller deduplicated
 `ne_dedup.txt` file. Because that file is approximately 1.2 GB, the app asks for
 explicit confirmation before downloading it. It then counts lines as a stream
 and samples from random byte offsets without loading the corpus into memory.
-
-The **Local base vs finetuned** tab discovers the final TinyLlama, GPT-2, and
-Llama 2 7B PEFT adapters under `finetuned_models/`. It samples an instance from the
-currently selected evaluation dataset (or accepts a custom prompt), applies a
-temperature/top-p/top-k decoding grid, and displays each base-model output
-beside its finetuned output. LIMA-style `HUMAN`/`ASSISTANT` records are split
-into a model prompt and reference answer automatically. The adapter weights
-and tokenizers are local; the corresponding base checkpoint is downloaded
-from Hugging Face on first use unless cached-only mode is selected.
-
-The **Tokenizer analysis** tab compares up to four base or repository
-tokenizers without loading model weights. It reports the percentage of
-non-special vocabulary entries containing Devanagari, token fragmentation on
-the same Nepali sample, single-token Nepali word coverage, unknown-token rate,
-and per-token pieces. Use the sample-efficiency metrics alongside vocabulary
-coverage when choosing a base model; vocabulary percentage alone is not a
-model-quality score.
-
-The **Model comparison** tab can turn the selected dataset record into a
-prompt and compare Gemini Flash, Gemini Flash-Lite, Google-hosted Gemma, the
-discovered local finetuned adapters, the Hugging Face `google/gemma-4-E2B` base model,
-the local IRIIS GPT-2 Nepali 124M base and instruction-tuned checkpoints,
-HimalayaGPT 0.5B Instruct, Arkios 1B Chat, and
-Hugging Face Inference Provider models over a shared temperature/top-p/top-k
-grid. Local choices do not make an inference API request. Arkios and
-HimalayaGPT, Gemma 4 E2B, and IRIIS GPT-2 each have a dedicated implementation under
-`attention_maps/inference/`.
-Source text may come from the dataset, be entered manually, or be omitted in
-prompt-only mode. System and user prompts are configured separately, and no
-model is selected automatically, preventing accidental API calls.
-Credentials are read only from the `GEMINI_API_KEY` and `HF_TOKEN` environment
-variables; the UI never accepts or displays their values. Remote requests may
-require provider access or incur cost.
-
-The **Evaluation** tab streams bounded slices from a pinned public FLORES-200
-mirror, using the `eng_Latn` and `npi_Deva` columns from its dev or devtest
-split. `HF_TOKEN` is optional and only improves Hub rate limits. The tab compares
-the LIMA teacher (`gemini-3.5-flash-lite`), Google-hosted Gemma 4 API, local
-Gemma 4 E2B base weights, local base and finetuned adapter variants,
-IRIIS GPT-2 Nepali base and instruct, HimalayaGPT, and Arkios on the same
-English sentences. It reports
-per-instance and corpus chrF++ scores, coverage, latency, and a model comparison
-chart without loading the complete benchmark into memory.
-
-The adjacent **Decoder benchmarks** tab evaluates every model through generated
-text. It includes all 13 datasets in the official IRIIS NLUE collection plus
-three decoder-oriented Nepali benchmarks: Belebele reading comprehension,
-Global-MMLU knowledge/reasoning, and XL-Sum abstractive summarization. Choose a
-task, stream a bounded slice from its pinned revision, and compare hosted models
-with local base/PEFT variants, including both IRIIS GPT-2 Nepali 124M models.
-Multiple-choice and classification tasks report
-accuracy and macro-F1, STS-B reports correlations and R², and XL-Sum reports
-ROUGE-1/2/L. The existing Evaluation tab supplies FLORES English-to-Nepali
-translation with chrF++. Published NLUE scores remain visible where available;
-GMET stays manual-review-only because its public data has no gold-answer column.
 
 ## Path 2 detailed guide — Synthetic dataset generation application
 

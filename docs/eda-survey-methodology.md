@@ -20,10 +20,10 @@ schema adapter ──> Unicode/token metrics ──> bounded accumulators
           JSON + derived CSV                              CSV + manifest + plots
 ```
 
-The analyzer never stores raw sampled text. It retains hashes for exact
-duplicate screening, compact SimHash fingerprints for approximate candidate
-lookup, bounded token/source/pattern counters, and deterministic reservoirs of
-numeric metrics for quantiles and plots.
+The analyzer never persists raw sampled text. It retains SHA-256 digests,
+MinHash signatures/LSH buckets, normalized paragraph digests, bounded
+token/source/pattern counters, and deterministic reservoirs of numeric metrics
+for quantiles and plots.
 
 Survey normalization is not a cleaning or language-filtering stage. It creates
 an in-memory NFC-normalized analysis copy, removes byte-order marks, and
@@ -47,7 +47,8 @@ documented in [eda-cleaning-notes.md](eda-cleaning-notes.md).
   token window. An edge count is the number of documents containing that local
   pairing; repeated occurrences in the same document count once.
 - Provenance: configured or automatically detected source/domain fields.
-- Duplicates: exact normalized-text hashes plus banded 64-bit SimHash screening.
+- Duplicates: normalized SHA-256 exact matching, character-shingle MinHash-LSH
+  near-document screening, and repeated normalized paragraph evidence.
 
 Near-duplicate counts are screening estimates, not ground truth. Type-token
 ratio becomes a documented lower bound when the vocabulary cap is reached.
@@ -63,6 +64,12 @@ tables preserve surface forms rather than silently stemming the corpus.
 The canonical Nepali list lives at `configs/eda/stopwords.txt`. The survey JSON
 resolves that file relative to itself, and Streamlit loads the same resource for
 EDA co-occurrence and WordCloud controls.
+
+Streamlit derives each fold size from a population percentage, runs five
+independently seeded folds by default, and reports expected overlap-adjusted
+coverage. These are repeated EDA samples rather than model cross-validation
+folds. The fold table is the primary check on estimate stability; a percentage
+alone is not evidence that rare subpopulations are represented.
 
 Sentence and line KDE curves use a bounded deterministic sample. The report
 implements Gaussian KDE directly with NumPy, trims the displayed range at the

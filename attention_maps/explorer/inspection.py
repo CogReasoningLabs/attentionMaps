@@ -221,6 +221,18 @@ def inspect_huggingface_dataset(
         raise ValueError(f"Hugging Face dataset has no {split!r} split metadata")
     shard_lengths = list(getattr(split_info, "shard_lengths", None) or [])
     shard_count = len(shard_lengths) or int(getattr(stream, "num_shards", 1))
+    memory_bytes = int(split_info.num_bytes)
+    hub_file_bytes = getattr(stream.info, "download_size", None)
+    if not hub_file_bytes:
+        checksums = getattr(stream.info, "download_checksums", None) or {}
+        checksum_sizes = [
+            item.get("num_bytes")
+            for item in checksums.values()
+            if isinstance(item, dict) and item.get("num_bytes") is not None
+        ]
+        hub_file_bytes = sum(int(size) for size in checksum_sizes) or None
+    if hub_file_bytes is not None:
+        hub_file_bytes = int(hub_file_bytes)
     inventory = {
         "format": "huggingface",
         "dataset_id": dataset_id,
@@ -228,7 +240,12 @@ def inspect_huggingface_dataset(
         "dataset_split": split,
         "rows": int(split_info.num_examples),
         "files": shard_count,
-        "bytes": int(split_info.num_bytes),
+        # Prefer physical/download bytes for storage displays. SplitInfo's
+        # num_bytes is the decoded Arrow footprint, not disk usage.
+        "bytes": hub_file_bytes if hub_file_bytes is not None else memory_bytes,
+        "hub_file_bytes": hub_file_bytes,
+        "memory_bytes": memory_bytes,
+        "streaming": True,
         "row_groups": [],
         "columns": list(features),
         "schema": [
@@ -249,20 +266,24 @@ def inspect_huggingface_dataset(
                 f"Could not count filtered Hugging Face rows: {error}"
             ) from error
         source_rows = inventory["rows"]
+        source_memory_bytes = inventory["memory_bytes"]
         inventory.update(
             {
                 "rows": filtered_rows,
                 "source_rows": source_rows,
-                "bytes": (
-                    round(inventory["bytes"] * filtered_rows / source_rows)
+                "memory_bytes": (
+                    round(source_memory_bytes * filtered_rows / source_rows)
                     if source_rows
                     else 0
                 ),
-                "bytes_estimated": True,
+                "memory_bytes_estimated": True,
                 "filter_column": filter_column,
                 "filter_value": filter_value,
             }
         )
+        if inventory["hub_file_bytes"] is None:
+            inventory["bytes"] = inventory["memory_bytes"]
+            inventory["bytes_estimated"] = True
     return inventory
 
 
@@ -389,6 +410,7 @@ def sample_huggingface_rows(
                     column: source_record.get(column) for column in selected_columns
                 }
                 record[f"{VIEWER_PREFIX}row_index"] = index
+                record[f"{VIEWER_PREFIX}identity_stable"] = False
                 record[f"{VIEWER_PREFIX}file"] = (
                     f"hf://datasets/{inventory['dataset_id']}/"
                     f"{inventory['dataset_split']}?"
@@ -420,7 +442,11 @@ def sample_huggingface_rows(
         sampled = []
         for index, source_record in enumerate(stream.take(sample_size)):
             record = {column: source_record.get(column) for column in selected_columns}
-            record[f"{VIEWER_PREFIX}row_index"] = source_record.get("id", index)
+            source_id = source_record.get("id")
+            record[f"{VIEWER_PREFIX}row_index"] = (
+                source_id if source_id is not None else index
+            )
+            record[f"{VIEWER_PREFIX}identity_stable"] = source_id is not None
             record[f"{VIEWER_PREFIX}file"] = (
                 f"hf://datasets/{inventory['dataset_id']}/{inventory['dataset_split']}"
             )

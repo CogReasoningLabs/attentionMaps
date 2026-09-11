@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from attention_maps.explorer import (
+    VIEWER_PREFIX,
     aya_nepali_dataset_specs,
     available_dataset_purposes,
     configured_finetuned_models_root,
@@ -18,6 +19,7 @@ from attention_maps.explorer import (
     filter_dataset_specs,
     find_manifest,
     format_bytes,
+    format_decimal_bytes,
     himalaya_nepali_sft_dataset,
     himalaya_ai_dataset_specs,
     extract_text,
@@ -131,7 +133,8 @@ class DatasetDiscoveryTests(unittest.TestCase):
         self.assertIn("Devanagari-script heuristic", notes)
         self.assertIn("low_ratio", notes)
         self.assertIn("## Planned cleaning and deduplication pipeline", notes)
-        self.assertIn("SimHash", notes)
+        self.assertIn("MinHash-LSH", notes)
+        self.assertIn("Population percentage and repeated folds", notes)
         self.assertIn("quarantine", notes)
 
     def test_uses_repository_nepali_stopword_resource(self):
@@ -346,14 +349,15 @@ class DatasetDisplayTests(unittest.TestCase):
             dataset_split="train",
         )
 
-        first = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500)
-        second = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500)
+        first = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500, 10_000)
+        second = eda_dataset_spec(viewer_spec, ("text",), ("source",), 500, 10_000)
 
         self.assertEqual(first, second)
         self.assertEqual(first.dataset_id, "org/corpus")
         self.assertEqual(first.text_columns, ("text",))
         self.assertEqual(first.source_columns, ("source",))
         self.assertEqual(first.sample_size, 500)
+        self.assertEqual(first.population_rows, 10_000)
         self.assertNotIn(":", first.key)
         self.assertEqual(
             parse_eda_terms("मन्त्रालय, लिलाम मन्त्रालय सरकार"),
@@ -434,6 +438,7 @@ class DatasetDisplayTests(unittest.TestCase):
                 "id": "string",
             }
             info = SimpleNamespace(
+                download_size=1_834_221_009,
                 splits={
                     "train": SimpleNamespace(
                         num_examples=1_112_863,
@@ -471,7 +476,12 @@ class DatasetDisplayTests(unittest.TestCase):
 
         self.assertEqual(inventory["rows"], 1_112_863)
         self.assertEqual(inventory["files"], 2)
+        self.assertEqual(inventory["hub_file_bytes"], 1_834_221_009)
+        self.assertEqual(inventory["bytes"], 1_834_221_009)
+        self.assertEqual(inventory["memory_bytes"], 3_662_367_076)
+        self.assertTrue(inventory["streaming"])
         self.assertEqual(records[0]["conversations"][0]["value"], "प्रश्न")
+        self.assertTrue(records[0][f"{VIEWER_PREFIX}identity_stable"])
         self.assertEqual(stream.shuffle_arguments["buffer_size"], 50)
 
     def test_previews_nested_and_long_values(self):
@@ -482,6 +492,10 @@ class DatasetDisplayTests(unittest.TestCase):
 
         self.assertTrue(records[0]["text"].endswith("…"))
         self.assertIsInstance(records[0]["messages"], str)
+
+    def test_formats_hub_storage_with_decimal_units(self):
+        self.assertEqual(format_decimal_bytes(30_600_000_000), "30.6 GB")
+        self.assertEqual(format_bytes(30_600_000_000), "28.5 GiB")
 
     def test_formats_binary_sizes(self):
         self.assertEqual(format_bytes(1024), "1.0 KiB")
@@ -588,6 +602,15 @@ class DatasetDisplayTests(unittest.TestCase):
 
         self.assertEqual(text_columns(schema)[:2], ["text", "messages"])
 
+    def test_prefers_case_insensitive_text_fields_over_identifier_metadata(self):
+        schema = [
+            {"column": "ID", "type": "string", "nullable": "False"},
+            {"column": "Word", "type": "string", "nullable": "True"},
+            {"column": "Class", "type": "string", "nullable": "True"},
+        ]
+
+        self.assertEqual(text_columns(schema), ["Word"])
+
     def test_parses_inference_grid_and_model_fields(self):
         self.assertEqual(
             parse_number_list("0.2, 0.7 1.0", value_type=float, name="temperature"),
@@ -600,7 +623,55 @@ class DatasetDisplayTests(unittest.TestCase):
 
 
 class DatasetExplorerAppTests(unittest.TestCase):
+    def test_app_exposes_only_the_focused_preprocessing_tabs(self):
+        source = (
+            Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            '["WORKSPACE", "Source sample", "Inference", "Metadata"]', source
+        )
+        for removed_tab in (
+            '"Survey EDA"',
+            '"EDA & cleaning notes"',
+            '"Word cloud"',
+            '"Tokenizer analysis"',
+            '"Local base vs finetuned"',
+            '"Model comparison"',
+            '"Evaluation"',
+            '"Decoder benchmarks"',
+        ):
+            self.assertNotIn(removed_tab, source)
+
+        inference_source = (
+            Path(__file__).resolve().parents[1]
+            / "apps/explorer_tabs/inference_hub.py"
+        ).read_text(encoding="utf-8")
+        for tool in (
+            "Model comparison",
+            "Local base vs finetuned",
+            "Translation evaluation",
+            "Decoder benchmarks",
+        ):
+            self.assertIn(tool, inference_source)
+
+        workspace_source = (
+            Path(__file__).resolve().parents[1]
+            / "apps/explorer_tabs/workspace.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("st.tabs(", workspace_source)
+        for visualization in (
+            "dataset_profile.png",
+            "document_size_distribution.png",
+            "segment_length_kde.png",
+            "top_ngrams.png",
+            "deduplication_stages.png",
+            "wordcloud.png",
+        ):
+            self.assertIn(visualization, workspace_source)
+
     def test_runs_eda_from_ui_and_exposes_detailed_results(self):
+        self.skipTest("Raw-data Survey EDA was intentionally removed from the UI")
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
@@ -658,13 +729,21 @@ class DatasetExplorerAppTests(unittest.TestCase):
                         "Duplicates",
                     }.issubset({metric.label for metric in app.metric})
                 )
-                output_dir = Path(app.session_state[result_key]["output_dir"])
+                self.assertEqual(
+                    len(app.session_state[result_key]["profiles"]),
+                    5,
+                )
+                output_dir = Path(
+                    app.session_state[result_key]["output_dirs"][0]
+                )
                 self.assertTrue(
                     (output_dir / "document_size_distribution.png").is_file()
                 )
                 self.assertTrue((output_dir / "top_2grams.csv").is_file())
+                self.assertTrue((output_dir / "deduplication_stages.csv").is_file())
 
     def test_nlue_benchmark_exposes_collection_tasks_and_local_models(self):
+        self.skipTest("Benchmark tabs were intentionally removed from this app")
         try:
             from streamlit.testing.v1 import AppTest
         except ModuleNotFoundError:
@@ -703,6 +782,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
             if item.label == "Decoder models to benchmark"
         )
         self.assertTrue(any(tab.label == "Survey EDA" for tab in app.tabs))
+        self.assertTrue(any(tab.label == "WORKSPACE" for tab in app.tabs))
         self.assertTrue(any(tab.label == "EDA & cleaning notes" for tab in app.tabs))
         provider_selector = next(
             item for item in app.selectbox if item.label == "Provider / lineage"
@@ -720,7 +800,17 @@ class DatasetExplorerAppTests(unittest.TestCase):
             any(button.label == "Run EDA for this dataset" for button in app.button)
         )
         self.assertTrue(
-            any(field.label == "Sampled rows" for field in app.number_input)
+            {
+                "Start Step 1 · Sample dataset",
+                "Start Step 2 · Normalize NFC",
+                "Start Step 3 · Run deduplication",
+            }.issubset({button.label for button in app.button})
+        )
+        self.assertTrue(
+            any(
+                field.label == "Population per fold (%)"
+                for field in app.number_input
+            )
         )
         llama_label = "Llama 2 7B Chat · Nepali Multi-Dataset QLoRA"
         self.assertIn(f"Base · {llama_label}", model_selector.options)
@@ -773,6 +863,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
         )
 
     def test_evaluation_dropdown_includes_google_gemma_api(self):
+        self.skipTest("Evaluation tabs were intentionally removed from this app")
         try:
             from streamlit.testing.v1 import AppTest
         except ModuleNotFoundError:
@@ -827,6 +918,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
         self.assertEqual(gemma_model_field.value, "gemma-4-26b-a4b-it")
 
     def test_llama_checkpoint_appears_in_all_inference_selectors(self):
+        self.skipTest("Inference tabs were intentionally removed from this app")
         try:
             from streamlit.testing.v1 import AppTest
         except ModuleNotFoundError:

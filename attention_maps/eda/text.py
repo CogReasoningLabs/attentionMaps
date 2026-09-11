@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
-from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
@@ -201,28 +199,6 @@ def extract_source(record: Mapping[str, Any], columns: Sequence[str] = ()) -> st
                 return domain.lower().removeprefix("www.")
         return normalize_text(text)[:300]
     return ""
-
-
-def stable_text_digest(text: str) -> bytes:
-    return hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
-
-
-def simhash(tokens: Sequence[str]) -> int:
-    """Return deterministic 64-bit SimHash over token frequencies."""
-
-    vector = [0] * 64
-    for token, count in Counter(tokens).items():
-        digest = int.from_bytes(
-            hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest(),
-            "big",
-        )
-        for bit in range(64):
-            vector[bit] += count if digest & (1 << bit) else -count
-    return sum(1 << bit for bit, score in enumerate(vector) if score >= 0)
-
-
-def hamming_distance(left: int, right: int) -> int:
-    return (left ^ right).bit_count()
 
 
 def _path_value(record: Mapping[str, Any], path: str) -> Any:

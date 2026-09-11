@@ -23,6 +23,40 @@ Three related paths exist, and their outputs must not be confused:
 | Pretraining source cleaner | Writes a new cleaned dataset | Filter and standardize the local PDF, news, and lyrics sources |
 | WordCloud/token display | No | Produce visualization-only Devanagari tokens and stopword-filtered frequencies |
 
+### Streamlit cleaning WORKSPACE
+
+The per-dataset `WORKSPACE` tab enforces a gated materialization sequence:
+
+1. **Sampling:** default to one seeded random selection partitioned into
+   non-overlapping folds, giving exact unique coverage up to the population
+   limit. Users can disable non-overlap when genuinely independent repeated
+   samples and their expected overlap are desired.
+2. **NFC normalization:** extract only the selected text/provenance fields and
+   create a new NFC-normalized workspace document set. The sampled source rows
+   are released from session memory after this stage.
+3. **Deduplication layers:** remove normalized exact SHA-256 duplicates, remove
+   MinHash-LSH near-duplicate candidates, then strip normalized paragraphs that
+   recur in the configured number of retained documents.
+4. **Clean-data EDA:** enable EDA only after all three preparation stages have
+   completed successfully.
+
+The focused Streamlit application exposes no raw-data Survey EDA, WordCloud, or
+tokenizer tabs. Its only EDA section is Step 4 on the
+preprocessed workspace dataset, with a fixed corpus profile, document-size
+distribution, text-structure distribution, n-gram chart, and residual duplicate
+audit plus a fixed-default, stopword-filtered WordCloud. WordCloud settings are
+kept internal rather than exposed as a large UI parameter panel. Inference and
+evaluation tools remain available together under one
+top-level **Inference** tab and are kept separate from EDA. Broader survey
+functions remain available to offline/CLI research code.
+
+Each stage has an independent button, status panel, and progress bar. Step 3
+writes a timestamped shared run under `artifacts/eda/ui/workspace/` (or the
+configured EDA output root), containing clean JSONL, a deduplication audit CSV,
+and a manifest. These are new workspace artifacts; the selected source dataset
+is never overwritten. The tab lists recent shared runs so team members using
+the same filesystem can coordinate against the same outputs.
+
 ### Survey EDA: diagnostic normalization, not row filtration
 
 For each extracted logical document, Survey EDA applies NFC normalization,
@@ -41,6 +75,14 @@ dataset.
 The EDA Devanagari ratio is the share of Unicode letters and combining marks in
 the U+0900–U+097F block. Whitespace, digits, and punctuation do not contribute
 to that ratio.
+
+Survey EDA also aggregates script evidence across the selected text fields and
+assigns one of: `Devanagari`, `Mixed (Devanagari + romanized)`, `Romanized`,
+`Latin`, `Other`, or `Mixed(Nepali+English)`. Devanagari, Latin, and other
+letter shares come directly from Unicode properties. The distinction between
+Romanized Nepali and other Latin/English text is a conservative lexical and
+transliteration heuristic, so the UI reports its supporting token percentage
+and labels the result as sample-based evidence rather than ground truth.
 
 ### Pretraining source cleaner: materialized filtering
 
@@ -82,7 +124,8 @@ universal thresholds; retention and rejection counts must be reviewed per
 source before promotion.
 
 Accepted rows preserve `source`, `source_id`, `language`, URL, raw-text SHA-256,
-cleaned-text SHA-256, and cleaning statistics in metadata. Each source also
+cleaned-text SHA-256, input/output script categories, and cleaning statistics
+in metadata. Each source also
 receives a manifest containing the exact configuration, output files, counts,
 rejection reasons, and character retention. The next build stage can perform
 deterministic source sampling, exact cleaned-text SHA-256 deduplication, stable
@@ -91,12 +134,13 @@ does not tokenize, split, combine, or near-deduplicate the sources.
 
 ### Important limitation of the language gate
 
-This is a **Devanagari-script heuristic**, not a Nepali language classifier.
-Hindi, Sanskrit, Marathi, or other Devanagari text can pass it, while Romanized
-Nepali can fail it. Code-switching may also be damaged by `strict` mode. A
-future language-identification stage should combine script ratio with a
-validated Nepali classifier and manual samples; it must record confidence and
-quarantine uncertain rows rather than silently deleting them.
+The cleaning gate remains a **Devanagari-script heuristic**, not a validated
+Nepali language classifier. Hindi, Sanskrit, Marathi, or other Devanagari text
+can pass it, while Romanized Nepali can fail the gate even when the diagnostic
+classifier labels it correctly. Code-switching may also be damaged by `strict`
+mode. Production language filtration should combine the reported script class
+with a validated Nepali classifier and manual samples; it must record
+confidence and quarantine uncertain rows rather than silently deleting them.
 
 Stopword removal and suffix stripping are used for WordCloud/co-occurrence
 analysis only. They are not applied to materialized training text, because
@@ -158,16 +202,49 @@ population was analyzed. Otherwise, reported frequencies and distributions are
 sample estimates. Hugging Face filtered-dataset byte sizes can be estimates
 even when the filtered row count is known.
 
+### Remote size and laptop-safe loading
+
+For a Hugging Face dataset, **Hub file size** is the compressed source/download
+size reported by dataset metadata. **Estimated memory size** is the decoded
+Arrow footprint for the selected split. These are intentionally displayed as
+separate values; compression means they can differ substantially.
+
+Remote inspection and sampling use Hugging Face streaming. Random records reads
+at most 20 rows. Survey EDA derives rows per fold from a selected population
+percentage and applies a 50,000-row-per-fold Streamlit safety cap. Sampling
+projects only the selected columns.
+
+### Population percentage and repeated folds
+
+Streamlit defaults to five independently seeded, without-replacement samples
+within each fold. They are repeated EDA folds, not train/validation k-fold cross
+validation, and rows can overlap between folds. The UI reports requested and
+effective percentage, rows per fold, total rows read, and expected unique
+population coverage:
+
+```text
+expected coverage = 1 - (1 - rows_per_fold / population_rows) ^ folds
+```
+
+The percentage defaults to the value that targets approximately 5,000 rows per
+fold, capped at 20% for a sample-mode run; it is not claimed as a universal
+statistically sufficient percentage.
+Researchers must inspect across-fold stability and increase coverage for rare
+strata. Entire-population mode is available in Streamlit through 50,000 rows
+and a decoded-size estimate of 1 GiB. Larger full-corpus runs should use the
+streaming CLI or distributed curation tools with an explicit memory budget,
+because duplicate indexes grow with the number and length of documents.
+
 ## Core EDA logic
 
 1. Extract configured text fields from plain, nested, chat, or instruction
    records. Multiple selected fields are joined into one logical document.
-2. Apply NFC Unicode normalization, remove byte-order marks, and normalize
-   whitespace. The original source row is not overwritten.
+2. Apply analysis normalization without overwriting the original source row.
 3. Calculate document characters, regex-token counts, sentence-token lengths,
    physical-line character lengths, and Devanagari composition.
-4. Track exact and near duplicates, bounded token/n-gram frequencies,
-   configured seed-term co-occurrences, and row-level provenance.
+4. Run sequential exact-document, near-document, and repeated-paragraph
+   duplicate screening, plus bounded token/n-gram frequencies, configured
+   seed-term co-occurrences, and row-level provenance.
 5. Retain deterministic bounded numeric samples for percentiles, histograms,
    and KDE plots; means, maxima, and counters use every examined usable row.
 6. Export summary JSON, evidence CSVs, figures, run configuration, and runtime
@@ -189,18 +266,34 @@ even when the filtered row count is known.
 
 ## Existing duplicate screening
 
-### Exact duplicates
+The three-stage ordering follows the practical design described in
+[“Why Deduplication Is the Most Underestimated Step in LLM Pretraining”](https://blog.gopenai.com/why-deduplication-is-the-most-underestimated-step-in-llm-pretraining-and-what-it-costs-you-to-get-a8d218f907a8),
+adapted here as bounded, read-only diagnostics rather than automatic deletion.
 
-The analyzer hashes the NFC-normalized, whitespace-collapsed document with a
-128-bit BLAKE2 digest. The first digest occurrence is treated as the original;
-later occurrences increment `exact_duplicate_rows`.
+### Pass 1: exact documents
 
-### Near duplicates
+The analyzer first applies the explicitly displayed comparison policy: NFC by
+default (NFKC is optional), BOM removal, leading/trailing whitespace stripping,
+internal whitespace collapse, and case-folding. It then hashes UTF-8 comparison
+text with SHA-256. Normalization therefore always happens before hashing. The
+first digest is retained and later matches increment `exact_duplicate_rows`.
 
-Every non-exact document receives a deterministic 64-bit SimHash built from
-case-folded regex-token frequencies. Eight bands retrieve candidates, and the
-default Hamming-distance threshold is three bits. A matching later document
-increments `near_duplicate_rows`.
+### Pass 2: near-duplicate documents
+
+Each non-exact document is represented with five-character shingles and a
+128-permutation MinHash signature by default. Sixteen LSH bands retrieve
+candidates, then signature agreement estimates Jaccard similarity. The default
+threshold is `0.80`. Matching later documents increment `near_duplicate_rows`.
+
+### Pass 3: repeated paragraph / boilerplate screening
+
+Documents surviving the first two passes are split at physical line/paragraph
+boundaries. Paragraphs are normalized with the same Unicode, case, and
+whitespace policy and counted by SHA-256. Paragraphs found in at least the
+configured number of distinct documents are reported as likely boilerplate,
+along with affected-document counts. This conservative implementation detects
+repeated normalized paragraphs; it does not yet claim fuzzy paragraph MinHash
+or remove the paragraph text.
 
 The displayed duplicate rate is:
 
@@ -208,8 +301,13 @@ The displayed duplicate rate is:
 (exact_duplicate_rows + near_duplicate_rows) / usable_rows × 100
 ```
 
-SimHash is screening evidence, not an automatic deletion instruction. It can
-consider reordered documents similar because it emphasizes token frequencies.
+All three Streamlit passes are screening evidence, not automatic deletion.
+MinHash is probabilistic, thresholds require manual calibration, and repeated
+paragraphs require review before materialized removal.
+Duplicate rates from a partial fold are generally lower bounds on corpus-wide
+duplication because two copies can land in different folds. Full-corpus
+deduplication is required before materializing final training data when the
+available compute and memory allow it.
 
 ## Planned cleaning and deduplication pipeline
 
@@ -255,11 +353,11 @@ ID, source, and reason.
 
 ### 5. Verify near duplicates
 
-Use SimHash only for candidate generation. Before removal, verify candidate
-pairs with interpretable measures such as token-set Jaccard overlap, length
-ratio, and optionally normalized edit similarity. Thresholds must be tuned on a
-manually labeled Nepali sample. Avoid blindly merging transitive chains where
-A resembles B and B resembles C but A does not resemble C.
+Use MinHash-LSH for candidate generation. Before materialized removal, verify
+candidate pairs with interpretable measures such as exact shingle Jaccard,
+length ratio, and optionally normalized edit similarity. Thresholds must be
+tuned on a manually labeled Nepali sample. Avoid blindly merging transitive
+chains where A resembles B and B resembles C but A does not resemble C.
 
 ### 6. Deduplicate in two passes
 

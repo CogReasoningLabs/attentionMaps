@@ -1,4 +1,4 @@
-"""Interactive explorer and survey EDA for pretraining and finetuning datasets.
+"""Focused dataset preprocessing and post-cleaning EDA workspace.
 
 Run with:
 
@@ -24,12 +24,6 @@ from attention_maps.datasets.kaggle import (
     inspect_kaggle_text,
     inspect_kaggle_workbook,
 )
-from attention_maps.evaluation.flores import (
-    load_flores_examples,
-)
-from attention_maps.evaluation.nlue import (
-    load_nlue_examples,
-)
 from attention_maps.explorer import (
     ALL_PROVIDERS,
     ALL_PURPOSES,
@@ -40,12 +34,13 @@ from attention_maps.explorer import (
     DatasetSpec,
     available_dataset_purposes,
     aya_nepali_dataset_specs,
-    configured_nepali_stopwords,
     custom_dataset,
+    dataset_size_bucket,
     discover_datasets,
     file_signatures,
     filter_dataset_specs,
     format_bytes,
+    format_decimal_bytes,
     himalaya_ai_dataset_specs,
     inspect_dataset,
     inspect_huggingface_dataset,
@@ -55,39 +50,12 @@ from attention_maps.explorer import (
     sample_dataset_rows,
     secret_fingerprint,
 )
-from attention_maps.inference.comparison import (
-    GoogleGenAIBackend,
-    HuggingFaceBackend,
-)
-from attention_maps.inference.arkios import (
-    load_arkios,
-)
-from attention_maps.inference.himalayagpt import (
-    load_himalayagpt,
-)
-from attention_maps.inference.iriis_gpt2 import (
-    iriis_gpt2_spec,
-    load_iriis_gpt2,
-)
-from attention_maps.inference.gemini_translation import GeminiTranslationBackend
-from attention_maps.inference.gemma4_base import load_gemma4_base
-from attention_maps.inference.local_comparison import (
-    LocalAdapterSpec,
-    load_local_model_pair,
-)
-from attention_maps.tokenization.analysis import TokenizerSpec, load_tokenizer
 from apps.explorer_tabs import (
-    render_comparison_tab,
     render_details_tab,
-    render_eda_tab,
-    render_evaluation_tab,
-    render_local_inference_tab,
+    render_inference_hub,
     render_manifest_tab,
-    render_nlue_tab,
-    render_notes_tab,
     render_sample_tab,
-    render_tokenizer_tab,
-    render_wordcloud_tab,
+    render_workspace_tab,
 )
 
 
@@ -100,17 +68,15 @@ def run_app() -> None:
         ) from error
 
     st.set_page_config(
-        page_title="Dataset Explorer",
+        page_title="Dataset Preprocessing",
         page_icon="🔎",
         layout="wide",
     )
-    st.title("Pretraining & Finetuning Dataset Explorer")
+    st.title("Dataset Preprocessing & EDA Workspace")
     st.caption(
-        "Inspect full Nepali records, schemas, manifests, and uniform random "
-        "samples, then run bounded survey EDA with detailed metrics and plots. "
-        "Future English and finetuning Parquet data use the same workflow."
+        "Select a dataset, verify its source and schema, then run Sampling → "
+        "NFC normalization → Deduplication → EDA on the preprocessed output."
     )
-    nepali_stopwords = configured_nepali_stopwords()
 
     @st.cache_data(show_spinner=False)
     def cached_inventory(
@@ -161,202 +127,15 @@ def run_app() -> None:
     ) -> list[dict[str, Any]]:
         return sample_dataset_rows(inventory, sample_size, seed, columns)
 
-    @st.cache_data(show_spinner=False)
-    def cached_flores_examples(
-        split: str,
-        offset: int,
-        limit: int,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> list[Any]:
-        del credential_fingerprint
-        return load_flores_examples(
-            split=split,
-            offset=offset,
-            limit=limit,
-            token=_token or None,
-        )
-
-    @st.cache_data(show_spinner=False)
-    def cached_nlue_examples(
-        task_key: str,
-        offset: int,
-        limit: int,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> list[Any]:
-        del credential_fingerprint
-        return load_nlue_examples(
-            task_key,
-            offset=offset,
-            limit=limit,
-            token=_token or None,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_google_backend(
-        model_id: str,
-        credential_fingerprint: str,
-        _api_key: str,
-    ) -> GoogleGenAIBackend:
-        del credential_fingerprint
-        return GoogleGenAIBackend(model_id, _api_key)
-
-    @st.cache_resource(show_spinner=False)
-    def cached_lima_teacher(
-        model_id: str,
-        credential_fingerprint: str,
-        _api_key: str,
-    ) -> GeminiTranslationBackend:
-        del credential_fingerprint
-        return GeminiTranslationBackend(_api_key, model_id)
-
-    @st.cache_resource(show_spinner=False)
-    def cached_huggingface_backend(
-        model_id: str,
-        provider: str,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> HuggingFaceBackend:
-        del credential_fingerprint
-        return HuggingFaceBackend(model_id, _token, provider)
-
-    @st.cache_resource(show_spinner=False)
-    def cached_local_model_pair(
-        adapter_key: str,
-        adapter_label: str,
-        adapter_path: str,
-        base_model_id: str,
-        device: str,
-        dtype: str,
-        quantization: str,
-        load_adapter: bool,
-        local_files_only: bool,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> Any:
-        del credential_fingerprint
-        adapter_spec = LocalAdapterSpec(
-            key=adapter_key,
-            label=adapter_label,
-            path=Path(adapter_path),
-            base_model_id=base_model_id,
-        )
-        return load_local_model_pair(
-            adapter_spec,
-            device=device,
-            dtype=dtype,
-            quantization=quantization,
-            load_adapter=load_adapter,
-            local_files_only=local_files_only,
-            token=_token or None,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_arkios(
-        model_id: str,
-        revision: str,
-        device: str,
-        dtype: str,
-        local_files_only: bool,
-    ) -> Any:
-        return load_arkios(
-            model_id=model_id,
-            revision=revision,
-            device=device,
-            dtype=dtype,
-            local_files_only=local_files_only,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_himalayagpt(
-        model_id: str,
-        revision: str,
-        device: str,
-        dtype: str,
-        local_files_only: bool,
-    ) -> Any:
-        return load_himalayagpt(
-            model_id=model_id,
-            revision=revision,
-            device=device,
-            dtype=dtype,
-            local_files_only=local_files_only,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_iriis_gpt2(
-        model_key: str,
-        device: str,
-        dtype: str,
-        local_files_only: bool,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> Any:
-        del credential_fingerprint
-        return load_iriis_gpt2(
-            iriis_gpt2_spec(model_key),
-            device=device,
-            dtype=dtype,
-            local_files_only=local_files_only,
-            token=_token or None,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_gemma4_base(
-        model_id: str,
-        revision: str,
-        device: str,
-        dtype: str,
-        local_files_only: bool,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> Any:
-        del credential_fingerprint
-        return load_gemma4_base(
-            model_id=model_id,
-            revision=revision,
-            device=device,
-            dtype=dtype,
-            local_files_only=local_files_only,
-            token=_token or None,
-        )
-
-    @st.cache_resource(show_spinner=False)
-    def cached_analysis_tokenizer(
-        key: str,
-        label: str,
-        source: str,
-        revision: str,
-        trust_remote_code: bool,
-        local: bool,
-        local_files_only: bool,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> Any:
-        del credential_fingerprint
-        tokenizer_spec = TokenizerSpec(
-            key=key,
-            label=label,
-            source=source,
-            revision=revision,
-            trust_remote_code=trust_remote_code,
-            local=local,
-        )
-        return load_tokenizer(
-            tokenizer_spec,
-            token=_token or None,
-            local_files_only=local_files_only,
-        )
-
     st.sidebar.header("Dataset")
-    data_root_text = st.sidebar.text_input("Data root", str(DEFAULT_DATA_ROOT))
+    source_settings = st.sidebar.expander("Local source settings")
+    data_root_text = source_settings.text_input("Data root", str(DEFAULT_DATA_ROOT))
     data_root = Path(data_root_text).expanduser()
-    use_custom = st.sidebar.checkbox("Use custom Parquet path")
+    use_custom = source_settings.checkbox("Use custom Parquet path")
 
     spec: DatasetSpec | None = None
     if use_custom:
-        custom_path_text = st.sidebar.text_input("Parquet file or directory")
+        custom_path_text = source_settings.text_input("Parquet file or directory")
         if custom_path_text:
             spec = custom_dataset(Path(custom_path_text))
             if spec is None:
@@ -382,7 +161,8 @@ def run_app() -> None:
             if not pipeline_specs and not external_specs:
                 st.warning(f"No supported datasets found under `{data_root}`.")
                 st.stop()
-            stage = st.sidebar.selectbox(
+            catalog_filters = st.sidebar.expander("Optional catalog filters")
+            stage = catalog_filters.selectbox(
                 "Pipeline stage",
                 PIPELINE_STAGES,
                 format_func=lambda item: PIPELINE_STAGE_LABELS[item],
@@ -400,7 +180,7 @@ def run_app() -> None:
                     )
                 )
             )
-            selected_provider = st.sidebar.selectbox(
+            selected_provider = catalog_filters.selectbox(
                 "Provider / lineage",
                 provider_options,
                 help=(
@@ -416,7 +196,7 @@ def run_app() -> None:
             purpose_state_key = "dataset-purpose-filter"
             if st.session_state.get(purpose_state_key) not in purpose_options:
                 st.session_state[purpose_state_key] = ALL_PURPOSES
-            selected_purpose = st.sidebar.selectbox(
+            selected_purpose = catalog_filters.selectbox(
                 "Dataset purpose",
                 purpose_options,
                 key=purpose_state_key,
@@ -527,29 +307,59 @@ def run_app() -> None:
     if spec.adapted_by:
         taxonomy_parts.append(f"**Adapted by:** {', '.join(spec.adapted_by)}")
     st.markdown(" · ".join(taxonomy_parts))
-    st.caption(
-        "Tags: " + ", ".join(spec.tags)
-        if spec.tags
-        else "Tags: pending taxonomy review"
-    )
     metric_columns = st.columns(5)
     metric_columns[0].metric("Rows", f"{inventory['rows']:,}")
-    metric_columns[1].metric("Files", f"{inventory['files']:,}")
-    if inventory["format"] == "json":
-        grouping_label, grouping_value = "JSON documents", inventory["files"]
-    elif inventory["format"] == "huggingface":
-        grouping_label, grouping_value = "Remote shards", inventory["files"]
-    elif inventory["format"] == "kaggle":
-        grouping_label, grouping_value = "Worksheets", 1
-    elif inventory["format"] == "kaggle_text":
-        grouping_label, grouping_value = "Text files", inventory["files"]
+    if inventory["format"] == "huggingface":
+        metric_columns[1].metric("Remote shards", f"{inventory['files']:,}")
+        metric_columns[2].metric("Columns", f"{len(inventory['columns']):,}")
+        hub_file_bytes = inventory.get("hub_file_bytes")
+        metric_columns[3].metric(
+            "Hub file size",
+            (
+                format_decimal_bytes(hub_file_bytes)
+                if hub_file_bytes is not None
+                else "Unknown"
+            ),
+            help="Compressed source files stored/downloaded from Hugging Face.",
+        )
+        metric_columns[4].metric(
+            "Estimated memory size",
+            format_bytes(inventory["memory_bytes"]),
+            help=(
+                "Decoded Arrow data size for the selected split; this is not "
+                "the download or disk size."
+            ),
+        )
+        loading_message = (
+            "Large remote dataset: bounded streaming mode is active. "
+            if hub_file_bytes is not None and hub_file_bytes >= 1024**3
+            else "Bounded streaming mode is active. "
+        )
+        st.info(
+            loading_message
+            + "Sampling is bounded and the full dataset is not held in memory."
+        )
     else:
-        grouping_label, grouping_value = "Row groups", len(inventory["row_groups"])
-    metric_columns[2].metric(grouping_label, f"{grouping_value:,}")
-    metric_columns[3].metric("Columns", f"{len(inventory['columns']):,}")
-    metric_columns[4].metric(
-        "Estimated size" if inventory.get("bytes_estimated") else "Disk size",
-        format_bytes(inventory["bytes"]),
+        metric_columns[1].metric("Files", f"{inventory['files']:,}")
+        if inventory["format"] == "json":
+            grouping_label, grouping_value = "JSON documents", inventory["files"]
+        elif inventory["format"] == "kaggle":
+            grouping_label, grouping_value = "Worksheets", 1
+        elif inventory["format"] == "kaggle_text":
+            grouping_label, grouping_value = "Text files", inventory["files"]
+        else:
+            grouping_label = "Row groups"
+            grouping_value = len(inventory["row_groups"])
+        metric_columns[2].metric(grouping_label, f"{grouping_value:,}")
+        metric_columns[3].metric("Columns", f"{len(inventory['columns']):,}")
+        metric_columns[4].metric(
+            "Estimated size" if inventory.get("bytes_estimated") else "Disk size",
+            format_bytes(inventory["bytes"]),
+        )
+
+    size_bucket = dataset_size_bucket(inventory)
+    st.caption(
+        f"Size bucket: **{size_bucket.label}** ({size_bucket.size_basis})."
     )
 
     if inventory["schema_variants"] > 1:
@@ -558,122 +368,31 @@ def run_app() -> None:
             "Sampling is limited to columns shared by every shard."
         )
 
-    (
-        details_tab,
-        sample_tab,
-        eda_tab,
-        notes_tab,
-        wordcloud_tab,
-        tokenizer_tab,
-        local_inference_tab,
-        inference_tab,
-        evaluation_tab,
-        nlue_tab,
-        manifest_tab,
-    ) = st.tabs(
-        [
-            "Schema",
-            "Random records",
-            "Survey EDA",
-            "EDA & cleaning notes",
-            "Word cloud",
-            "Tokenizer analysis",
-            "Local base vs finetuned",
-            "Model comparison",
-            "Evaluation",
-            "Decoder benchmarks",
-            "Manifest",
-        ]
+    workspace_tab, sample_tab, inference_tab, metadata_tab = st.tabs(
+        ["WORKSPACE", "Source sample", "Inference", "Metadata"]
     )
-
-    with details_tab:
-        render_details_tab(st=st, inventory=inventory, spec=spec)
+    with workspace_tab:
+        render_workspace_tab(st=st, inventory=inventory, spec=spec)
 
     with sample_tab:
-        base_seed = render_sample_tab(
-            st=st, inventory=inventory, spec=spec, cached_sample=cached_sample
-        )
-
-    with eda_tab:
-        render_eda_tab(
-            st=st,
-            inventory=inventory,
-            spec=spec,
-            nepali_stopwords=nepali_stopwords,
-        )
-
-    with notes_tab:
-        render_notes_tab(st=st)
-
-    with wordcloud_tab:
-        render_wordcloud_tab(
+        render_sample_tab(
             st=st,
             inventory=inventory,
             spec=spec,
             cached_sample=cached_sample,
-            nepali_stopwords=nepali_stopwords,
-            base_seed=base_seed,
-        )
-
-    with tokenizer_tab:
-        render_tokenizer_tab(
-            st=st,
-            inventory=inventory,
-            spec=spec,
-            cached_sample=cached_sample,
-            cached_analysis_tokenizer=cached_analysis_tokenizer,
-        )
-
-    with local_inference_tab:
-        render_local_inference_tab(
-            st=st,
-            inventory=inventory,
-            spec=spec,
-            cached_sample=cached_sample,
-            cached_local_model_pair=cached_local_model_pair,
         )
 
     with inference_tab:
-        render_comparison_tab(
+        render_inference_hub(
             st=st,
             inventory=inventory,
             spec=spec,
             cached_sample=cached_sample,
-            cached_arkios=cached_arkios,
-            cached_gemma4_base=cached_gemma4_base,
-            cached_google_backend=cached_google_backend,
-            cached_himalayagpt=cached_himalayagpt,
-            cached_huggingface_backend=cached_huggingface_backend,
-            cached_iriis_gpt2=cached_iriis_gpt2,
-            cached_local_model_pair=cached_local_model_pair,
         )
 
-    with evaluation_tab:
-        render_evaluation_tab(
-            st=st,
-            cached_arkios=cached_arkios,
-            cached_flores_examples=cached_flores_examples,
-            cached_gemma4_base=cached_gemma4_base,
-            cached_google_backend=cached_google_backend,
-            cached_himalayagpt=cached_himalayagpt,
-            cached_iriis_gpt2=cached_iriis_gpt2,
-            cached_lima_teacher=cached_lima_teacher,
-            cached_local_model_pair=cached_local_model_pair,
-        )
-
-    with nlue_tab:
-        render_nlue_tab(
-            st=st,
-            cached_arkios=cached_arkios,
-            cached_gemma4_base=cached_gemma4_base,
-            cached_google_backend=cached_google_backend,
-            cached_himalayagpt=cached_himalayagpt,
-            cached_iriis_gpt2=cached_iriis_gpt2,
-            cached_local_model_pair=cached_local_model_pair,
-            cached_nlue_examples=cached_nlue_examples,
-        )
-
-    with manifest_tab:
+    with metadata_tab:
+        render_details_tab(st=st, inventory=inventory, spec=spec)
+        st.divider()
         render_manifest_tab(st=st, spec=spec, data_root=data_root)
 
 

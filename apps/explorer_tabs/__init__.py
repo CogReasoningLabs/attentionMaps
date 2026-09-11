@@ -1,23 +1,14 @@
-"""Feature-oriented renderers for the dataset explorer tabs."""
+"""Renderers exposed by the focused preprocessing application."""
 
-from .comparison import render_comparison_tab
-from .eda import render_eda_tab, render_notes_tab
-from .evaluation import render_evaluation_tab, render_nlue_tab
-from .language import render_tokenizer_tab, render_wordcloud_tab
-from .local_models import render_local_inference_tab
 from .manifest import render_manifest_tab
+from .inference_hub import render_inference_hub
 from .overview import render_details_tab, render_sample_tab
+from .workspace import render_workspace_tab
 
 __all__ = [
-    "render_comparison_tab",
     "render_details_tab",
-    "render_eda_tab",
-    "render_evaluation_tab",
-    "render_local_inference_tab",
+    "render_inference_hub",
     "render_manifest_tab",
-    "render_nlue_tab",
-    "render_notes_tab",
     "render_sample_tab",
-    "render_tokenizer_tab",
-    "render_wordcloud_tab",
+    "render_workspace_tab",
 ]

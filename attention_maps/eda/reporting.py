@@ -21,12 +21,27 @@ def write_survey_report(
     output_dir: Path,
     *,
     plots: bool = True,
+    plot_names: Iterable[str] | None = None,
 ) -> list[Path]:
     """Write stable JSON/CSV products and optional derived-only figures."""
 
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
+    selected_plots = None if plot_names is None else frozenset(plot_names)
+    plotters = (
+        ("profile", plot_dataset_profile),
+        ("document_size", plot_document_size_distribution),
+        ("text_structure", plot_segment_length_kde),
+        ("ngrams", plot_top_ngrams),
+        ("cooccurrence", plot_cooccurrence_network),
+        ("deduplication", plot_deduplication_stages),
+        ("wordcloud", plot_wordcloud),
+    )
+    known_plots = {name for name, _ in plotters} | {"cross_dataset"}
+    if selected_plots is not None and not selected_plots <= known_plots:
+        unknown = ", ".join(sorted(selected_plots - known_plots))
+        raise ValueError(f"Unknown EDA plot name(s): {unknown}")
     summary_rows = [profile.summary.as_dict() for profile in run.profiles]
     for profile in run.profiles:
         dataset_dir = output_dir / profile.summary.dataset_key
@@ -34,13 +49,9 @@ def write_survey_report(
         written.extend(_write_profile(profile, dataset_dir))
         if plots:
             written.extend(
-                (
-                    plot_dataset_profile(profile, dataset_dir),
-                    plot_document_size_distribution(profile, dataset_dir),
-                    plot_segment_length_kde(profile, dataset_dir),
-                    plot_top_ngrams(profile, dataset_dir),
-                    plot_cooccurrence_network(profile, dataset_dir),
-                )
+                plotter(profile, dataset_dir)
+                for name, plotter in plotters
+                if selected_plots is None or name in selected_plots
             )
 
     written.append(_write_json(output_dir / "survey_summary.json", summary_rows))
@@ -51,12 +62,26 @@ def write_survey_report(
         "analysis": asdict(run.plan.analysis),
         "datasets_requested": [asdict(dataset) for dataset in run.plan.datasets],
         "datasets_completed": [profile.summary.dataset_key for profile in run.profiles],
+        "sampling_results": [
+            {
+                "dataset_key": profile.summary.dataset_key,
+                "population_rows": profile.summary.population_rows,
+                "rows_seen": profile.summary.rows_seen,
+                "population_coverage_pct": profile.summary.population_coverage_pct,
+                "seed": profile.summary.seed,
+            }
+            for profile in run.profiles
+        ],
         "failures": dict(run.failures),
         "raw_text_persisted": False,
         "runtime": _runtime_metadata(),
     }
     written.append(_write_json(output_dir / "survey_manifest.json", manifest))
-    if plots and run.profiles:
+    if (
+        plots
+        and run.profiles
+        and (selected_plots is None or "cross_dataset" in selected_plots)
+    ):
         written.append(plot_cross_dataset(run.profiles, output_dir))
     return written
 
@@ -92,6 +117,29 @@ def _write_profile(profile: DatasetProfile, output_dir: Path) -> list[Path]:
             [
                 {"source": source, "target": target, "document_count": count}
                 for source, target, count in profile.cooccurrence_edges
+            ],
+        ),
+        _write_csv(
+            output_dir / "deduplication_stages.csv",
+            [
+                {
+                    "stage": "1_exact_document",
+                    "method": profile.summary.dedup_hash_algorithm,
+                    "flagged": profile.summary.exact_duplicate_rows,
+                    "normalization": profile.summary.dedup_normalization,
+                },
+                {
+                    "stage": "2_near_document",
+                    "method": "MinHash-LSH",
+                    "flagged": profile.summary.near_duplicate_rows,
+                    "normalization": profile.summary.dedup_normalization,
+                },
+                {
+                    "stage": "3_repeated_paragraph",
+                    "method": "normalized paragraph SHA-256 frequency",
+                    "flagged": profile.summary.boilerplate_unique_paragraphs,
+                    "normalization": profile.summary.dedup_normalization,
+                },
             ],
         ),
     ]
@@ -306,6 +354,121 @@ def plot_cooccurrence_network(profile: DatasetProfile, output_dir: Path) -> Path
     figure.tight_layout()
     path = output_dir / "term_cooccurrence_network.png"
     figure.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(figure)
+    return path
+
+
+def plot_deduplication_stages(profile: DatasetProfile, output_dir: Path) -> Path:
+    """Plot sequential document flags and paragraph-affected documents."""
+
+    import matplotlib.pyplot as plt
+
+    _configure_plotting(plt)
+    labels = ("Exact SHA-256", "Near MinHash-LSH", "Boilerplate affected")
+    values = (
+        profile.summary.exact_duplicate_rows,
+        profile.summary.near_duplicate_rows,
+        profile.summary.boilerplate_affected_rows,
+    )
+    figure, axis = plt.subplots(figsize=(10, 5))
+    bars = axis.bar(labels, values, color=("#2a6f97", "#d99a2b", "#9c6fb6"))
+    axis.bar_label(bars, fmt="%d")
+    axis.set(title="Multi-stage duplicate screening", ylabel="Sampled documents")
+    axis.text(
+        0.01,
+        -0.2,
+        (
+            f"{profile.summary.dedup_normalization} → SHA-256; "
+            f"MinHash threshold={profile.summary.near_duplicate_threshold:.2f}; "
+            "boilerplate is flagged, not removed"
+        ),
+        transform=axis.transAxes,
+    )
+    figure.tight_layout()
+    path = output_dir / "deduplication_stages.png"
+    figure.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(figure)
+    return path
+
+
+def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
+    """Render a fixed, stopword-filtered cloud from derived token counts."""
+
+    import unicodedata
+
+    from attention_maps.explorer.catalog import (
+        ENGLISH_WORDCLOUD_STOPWORDS,
+        configured_nepali_stopwords,
+    )
+    from attention_maps.explorer.text import (
+        create_wordcloud,
+        find_devanagari_font,
+        find_latin_font,
+    )
+
+    excluded = {
+        unicodedata.normalize("NFC", token).casefold()
+        for token in (
+            *configured_nepali_stopwords(),
+            *ENGLISH_WORDCLOUD_STOPWORDS,
+        )
+    }
+    frequencies = {
+        token: count
+        for token, count in profile.top_tokens
+        if len(token) >= 2
+        and token.casefold() not in excluded
+        and any(character.isalpha() for character in token)
+    }
+    if not frequencies:
+        frequencies = {
+            token: count
+            for token, count in profile.top_tokens
+            if len(token) >= 2 and any(character.isalpha() for character in token)
+        }
+    if not frequencies:
+        return _plot_wordcloud_unavailable(
+            output_dir,
+            "No lexical words were detected. Check the selected workspace text field.",
+        )
+    contains_devanagari = any(
+        "\u0900" <= character <= "\u097f"
+        for token in frequencies
+        for character in token
+    )
+    font_path = find_devanagari_font() if contains_devanagari else find_latin_font()
+    if contains_devanagari and font_path is None:
+        return _plot_wordcloud_unavailable(
+            output_dir,
+            "A Devanagari-capable font is required to render this WordCloud.",
+        )
+    cloud = create_wordcloud(
+        frequencies,
+        font_path=font_path,
+        max_words=100,
+        width=1_400,
+        height=700,
+        background_color="white",
+        colormap="viridis",
+        seed=profile.summary.seed,
+    )
+    path = output_dir / "wordcloud.png"
+    cloud.to_file(str(path))
+    return path
+
+
+def _plot_wordcloud_unavailable(output_dir: Path, message: str) -> Path:
+    """Write a non-fatal explanatory figure when a cloud cannot be rendered."""
+
+    import matplotlib.pyplot as plt
+
+    _configure_plotting(plt)
+    figure, axis = plt.subplots(figsize=(14, 7))
+    axis.text(0.5, 0.5, message, ha="center", va="center", wrap=True, fontsize=14)
+    axis.set_axis_off()
+    axis.set_title("WordCloud unavailable", fontsize=16, fontweight="bold")
+    path = output_dir / "wordcloud.png"
+    figure.savefig(path, dpi=200, bbox_inches="tight")
     plt.close(figure)
     return path
 

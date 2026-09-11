@@ -477,7 +477,8 @@ def render_nlue_tab(
         "All tasks run through text generation: 13 generatively prompted NLUE "
         "tasks plus Belebele Nepali reading comprehension, Global-MMLU Nepali "
         "knowledge/reasoning, and XL-Sum Nepali abstractive summarization. "
-        "FLORES translation remains in the adjacent Evaluation tab."
+        "FLORES translation is available from the Translation evaluation option "
+        "in this same Inference tab."
     )
     nlue_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
     nlue_task_spec = st.selectbox(

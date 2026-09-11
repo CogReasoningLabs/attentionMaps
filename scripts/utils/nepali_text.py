@@ -7,6 +7,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from .script import identify_script_category
+
 
 URL_PATTERN = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
 EMAIL_PATTERN = re.compile(r"(?<!\S)[^\s@]+@[^\s@]+\.[^\s@]+(?!\S)")
@@ -55,6 +57,7 @@ class CleaningResult:
     reason: str | None
     devanagari_ratio: float
     devanagari_letters: int
+    script_category: str = "Other"
 
     @property
     def accepted(self) -> bool:
@@ -143,11 +146,16 @@ def clean_text_with_result(
     without_markup = remove_markup_artifacts(normalized)
     sanitized = remove_unsafe_controls(remove_web_artifacts(without_markup))
     ratio, devanagari_letters = devanagari_letter_stats(sanitized)
+    script_category = identify_script_category(sanitized)
 
     if ratio < config.min_devanagari_ratio:
-        return CleaningResult("", "low_ratio", ratio, devanagari_letters)
+        return CleaningResult(
+            "", "low_ratio", ratio, devanagari_letters, script_category
+        )
     if devanagari_letters < config.min_devanagari_letters:
-        return CleaningResult("", "few_devanagari", ratio, devanagari_letters)
+        return CleaningResult(
+            "", "few_devanagari", ratio, devanagari_letters, script_category
+        )
 
     if config.mode == "strict":
         cleaned = "".join(
@@ -165,10 +173,10 @@ def clean_text_with_result(
     cleaned = normalize_whitespace(cleaned)
     visible_characters = sum(not char.isspace() for char in cleaned)
     if not cleaned:
-        return CleaningResult("", "empty", ratio, devanagari_letters)
+        return CleaningResult("", "empty", ratio, devanagari_letters, script_category)
     if visible_characters < config.min_characters:
-        return CleaningResult("", "short", ratio, devanagari_letters)
-    return CleaningResult(cleaned, None, ratio, devanagari_letters)
+        return CleaningResult("", "short", ratio, devanagari_letters, script_category)
+    return CleaningResult(cleaned, None, ratio, devanagari_letters, script_category)
 
 
 def clean_text(text: str, config: CleaningConfig = CleaningConfig()) -> str:

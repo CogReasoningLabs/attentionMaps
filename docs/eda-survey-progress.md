@@ -28,7 +28,8 @@ direct copy.
   instruction/response records.
 - [x] Add bounded Hugging Face streaming with deterministic shuffle settings.
 - [x] Compute length, Devanagari composition, quality, vocabulary, provenance,
-  exact duplicates, and approximate SimHash near-duplicates incrementally.
+  normalized SHA-256 exact duplicates, MinHash-LSH near duplicates, and
+  repeated-paragraph evidence incrementally.
 - [x] Bound plot samples and vocabulary state so analysis memory does not scale
   with raw text volume.
 - [x] Isolate per-dataset failures so a survey can continue.
@@ -54,6 +55,22 @@ direct copy.
 - [x] Document the implemented local pretraining language gate and preprocessing
   order, source-specific defaults, rejection reasons, provenance outputs, and
   its distinction from read-only EDA and visualization-only token filtering.
+- [x] Separate compressed Hugging Face file size from decoded memory size in
+  the explorer and surface its bounded streaming/sample limits for large data.
+- [x] Classify sampled dataset text as Devanagari, mixed Devanagari/Romanized,
+  Romanized, Latin, other-script, or mixed Nepali/English; expose the evidence
+  in Survey EDA and preserve input/output categories in cleaning metadata.
+- [x] Derive EDA sample sizes from population percentages, run five repeated
+  folds by default, report expected unique coverage and across-fold stability,
+  and expose full-population mode for UI-safe corpora.
+- [x] Add three-stage duplicate diagnostics with explicit normalization and
+  hashing settings, per-fold UI metrics, CSV evidence, and a figure.
+- [x] Add a per-dataset Streamlit WORKSPACE with separately gated sampling,
+  NFC-normalization, and materialized multi-stage deduplication buttons; persist
+  timestamped clean JSONL/audit manifests and unlock EDA only for clean data.
+- [x] Focus the Streamlit explorer on four tabs (WORKSPACE, Source sample,
+  Inference, and Metadata), consolidate all inference/evaluation tools behind
+  one selector, and expose one fixed EDA section only after preprocessing.
 - [x] Add independent provider, source/adaptation lineage, purpose hierarchy,
   and tags to the dataset explorer; classify the 17 known Himalaya AI datasets.
 - [x] Make dataset-purpose choices dependent on the selected provider/lineage,
