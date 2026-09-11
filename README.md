@@ -40,8 +40,13 @@ run the gated cleaning pipeline, and perform EDA only on its preprocessed
 output. Synthetic pipeline artifacts remain separate from the corpus catalog.
 
 ```bash
-.venv/bin/python -m streamlit run apps/dataset_explorer.py
+.venv/bin/python scripts/run_dataset_explorer.py
 ```
+
+This supervised launcher shuts down Streamlit and any active model, EDA, or
+upload workers together. Press `Ctrl+C` once for a graceful stop; press it a
+second time to force an immediate stop. Extra Streamlit flags can be appended,
+for example `--server.port=8502`.
 
 Primary outputs are clean workspace datasets, deduplication audits, manifests,
 and a fixed set of reproducible post-preprocessing EDA reports. See
@@ -270,7 +275,7 @@ Inspect raw, cleaned, processed, or tokenized Parquet records without loading a
 whole dataset into memory:
 
 ```bash
-.venv/bin/python -m streamlit run apps/dataset_explorer.py
+.venv/bin/python scripts/run_dataset_explorer.py
 ```
 
 Install `requirements.txt` in that same Python environment first.

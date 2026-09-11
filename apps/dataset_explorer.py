@@ -2,7 +2,10 @@
 
 Run with:
 
-    streamlit run apps/dataset_explorer.py
+    python scripts/run_dataset_explorer.py
+
+The supervisor launcher provides bounded Ctrl+C shutdown for long-running
+preprocessing, EDA, upload, and inference work.
 
 The app discovers the repository's raw, cleaned, processed, and tokenized
 Parquet datasets. The repository's LIMA source and translation JSON is exposed
