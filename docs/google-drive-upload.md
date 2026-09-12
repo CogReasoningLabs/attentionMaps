@@ -60,6 +60,13 @@ Install dependencies once:
 python -m pip install -r requirements.txt
 ```
 
+For a one-user upload from your own computer, pass both the source path and
+destination folder ID explicitly. `save.py` has no default upload target:
+
+```powershell
+python save.py upload_test_folder --folder-id YOUR_DRIVE_FOLDER_ID
+```
+
 ## Add OAuth routes to your web app
 
 Keep a random state in a signed server-side session; do not use a global

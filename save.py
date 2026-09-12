@@ -20,7 +20,6 @@ from googleapiclient.http import MediaFileUpload
 
 CREDENTIALS_FILE = Path("credentials.json")
 TOKEN_FILE = Path("token.json")
-DEFAULT_FOLDER_ID = "1fFWVdaIbOV0JVH1SQUpRAAUSY_6TtwmV"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
@@ -41,6 +40,24 @@ def get_drive_service():
 		TOKEN_FILE.write_text(credentials.to_json(), encoding="utf-8")
 
 	return build("drive", "v3", credentials=credentials, cache_discovery=False)
+
+
+def create_drive_folder(name: str, parent_id: str) -> dict:
+	"""Create a folder in Google Drive and return its metadata."""
+	return (
+		get_drive_service()
+		.files()
+		.create(
+			body={
+				"name": name,
+				"mimeType": "application/vnd.google-apps.folder",
+				"parents": [parent_id],
+			},
+			fields="id,name,mimeType,webViewLink",
+			supportsAllDrives=True,
+		)
+		.execute()
+	)
 
 
 def upload_file(file_path: Path, folder_id: str) -> dict:
@@ -69,17 +86,32 @@ def upload_file(file_path: Path, folder_id: str) -> dict:
 	)
 
 
+def upload_path(path: Path, folder_id: str) -> list[dict]:
+	"""Upload a file or a directory tree into the destination folder."""
+	if path.is_file():
+		return [upload_file(path, folder_id)]
+	if not path.is_dir():
+		raise FileNotFoundError(f"File or directory not found: {path}")
+
+	drive_folder = create_drive_folder(path.name, folder_id)
+	results = [drive_folder]
+	for child in sorted(path.iterdir()):
+		results.extend(upload_path(child, drive_folder["id"]))
+	return results
+
+
 def main() -> None:
-	parser = argparse.ArgumentParser(description="Upload a file to Google Drive.")
-	parser.add_argument("file", nargs="?", default="data.py")
-	parser.add_argument("--folder-id", default=DEFAULT_FOLDER_ID)
+	parser = argparse.ArgumentParser(description="Upload a file or directory to Google Drive.")
+	parser.add_argument("file", help="Path of the file or directory to upload")
+	parser.add_argument("--folder-id", required=True, help="Destination Google Drive folder ID")
 	args = parser.parse_args()
 
-	result = upload_file(Path(args.file), args.folder_id)
-	print(f"Uploaded: {result['name']}")
-	print(f"File ID: {result['id']}")
-	if result.get("webViewLink"):
-		print(f"Open: {result['webViewLink']}")
+	results = upload_path(Path(args.file), args.folder_id)
+	for result in results:
+		print(f"Uploaded: {result['name']} ({result['mimeType']})")
+		print(f"File ID: {result['id']}")
+		if result.get("webViewLink"):
+			print(f"Open: {result['webViewLink']}")
 
 
 if __name__ == "__main__":
