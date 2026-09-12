@@ -787,7 +787,9 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
                 sample_size=len(documents),
                 seed=int(state["seed"]),
                 dedup_normalization="NFC",
-                top_tokens=150,
+                # Keep enough internal candidates for canonical stopword filtering.
+                # The rendered cloud remains fixed at 100 words.
+                top_tokens=1_000,
             )
             LOGGER.info(
                 "CLEAN EDA START dataset=%s documents=%d output=%s",
@@ -895,7 +897,10 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
         if wordcloud_path.is_file():
             wordcloud_column.image(
                 wordcloud_path,
-                caption="Frequent meaningful words after fixed stopword filtering",
+                caption=(
+                    "Frequent meaningful words after mandatory filtering with "
+                    "configs/eda/stopwords.txt"
+                ),
             )
         else:
             wordcloud_column.info(

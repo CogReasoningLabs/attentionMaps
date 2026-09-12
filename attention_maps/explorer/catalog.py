@@ -196,9 +196,7 @@ def configured_eda_output_root() -> Path:
 def configured_nepali_stopwords() -> tuple[str, ...]:
     """Load the repository's canonical Nepali stopword resource."""
 
-    if DEFAULT_NEPALI_STOPWORDS_PATH.is_file():
-        return load_stopwords_file(DEFAULT_NEPALI_STOPWORDS_PATH)
-    return DEFAULT_WORDCLOUD_STOPWORDS
+    return load_stopwords_file(DEFAULT_NEPALI_STOPWORDS_PATH)
 
 
 def load_eda_cleaning_notes(path: Path = EDA_CLEANING_NOTES_PATH) -> str:
@@ -256,37 +254,6 @@ TEXT_FIELD_NAMES = (
     "answer",
     "instruction",
     "output",
-)
-DEFAULT_WORDCLOUD_STOPWORDS = (
-    "अनि",
-    "अब",
-    "अथवा",
-    "अरू",
-    "एक",
-    "एउटा",
-    "का",
-    "कि",
-    "की",
-    "को",
-    "छ",
-    "छन्",
-    "तथा",
-    "तर",
-    "त्यो",
-    "नै",
-    "पनि",
-    "भएको",
-    "भने",
-    "सम्बन्धी",
-    "सम्बन्धित",
-    "मा",
-    "र",
-    "लाई",
-    "लागि",
-    "ले",
-    "वा",
-    "यो",
-    "हो",
 )
 ENGLISH_WORDCLOUD_STOPWORDS = (
     "a",

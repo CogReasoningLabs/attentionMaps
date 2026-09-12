@@ -140,8 +140,19 @@ class DatasetDiscoveryTests(unittest.TestCase):
     def test_uses_repository_nepali_stopword_resource(self):
         stopwords = configured_nepali_stopwords()
 
-        self.assertGreaterEqual(len(stopwords), 190)
+        self.assertGreaterEqual(len(stopwords), 240)
         self.assertIn("सम्बन्धी", stopwords)
+        self.assertIn("सबै", stopwords)
+        self.assertIn("गर्दा", stopwords)
+        self.assertIn("दुई", stopwords)
+
+    def test_does_not_fall_back_when_stopword_resource_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary_directory, patch(
+            "attention_maps.explorer.catalog.DEFAULT_NEPALI_STOPWORDS_PATH",
+            Path(temporary_directory) / "missing-stopwords.txt",
+        ):
+            with self.assertRaisesRegex(ValueError, "could not read stopword file"):
+                configured_nepali_stopwords()
 
     def test_allows_eda_output_root_override(self):
         with tempfile.TemporaryDirectory() as temporary_directory, patch.dict(

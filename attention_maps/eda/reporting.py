@@ -394,8 +394,6 @@ def plot_deduplication_stages(profile: DatasetProfile, output_dir: Path) -> Path
 def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
     """Render a fixed, stopword-filtered cloud from derived token counts."""
 
-    import unicodedata
-
     from attention_maps.explorer.catalog import (
         ENGLISH_WORDCLOUD_STOPWORDS,
         configured_nepali_stopwords,
@@ -406,30 +404,17 @@ def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
         find_latin_font,
     )
 
-    excluded = {
-        unicodedata.normalize("NFC", token).casefold()
-        for token in (
+    frequencies = _eligible_wordcloud_frequencies(
+        profile.top_tokens,
+        (
             *configured_nepali_stopwords(),
             *ENGLISH_WORDCLOUD_STOPWORDS,
-        )
-    }
-    frequencies = {
-        token: count
-        for token, count in profile.top_tokens
-        if len(token) >= 2
-        and token.casefold() not in excluded
-        and any(character.isalpha() for character in token)
-    }
-    if not frequencies:
-        frequencies = {
-            token: count
-            for token, count in profile.top_tokens
-            if len(token) >= 2 and any(character.isalpha() for character in token)
-        }
+        ),
+    )
     if not frequencies:
         return _plot_wordcloud_unavailable(
             output_dir,
-            "No lexical words were detected. Check the selected workspace text field.",
+            "No eligible words remain after configs/eda/stopwords.txt filtering.",
         )
     contains_devanagari = any(
         "\u0900" <= character <= "\u097f"
@@ -455,6 +440,35 @@ def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
     path = output_dir / "wordcloud.png"
     cloud.to_file(str(path))
     return path
+
+
+def _eligible_wordcloud_frequencies(
+    top_tokens: tuple[tuple[str, int], ...],
+    stopwords: tuple[str, ...],
+) -> dict[str, int]:
+    """Filter WordCloud candidates without ever restoring excluded words."""
+
+    import unicodedata
+
+    from attention_maps.eda.text import strip_nepali_suffix
+
+    excluded: set[str] = set()
+    for token in stopwords:
+        normalized = unicodedata.normalize("NFC", token).casefold()
+        excluded.add(normalized)
+        excluded.add(strip_nepali_suffix(normalized, minimum_stem_length=2))
+
+    frequencies: dict[str, int] = {}
+    for token, count in top_tokens:
+        normalized = unicodedata.normalize("NFC", token).casefold()
+        if (
+            len(normalized) >= 2
+            and normalized not in excluded
+            and strip_nepali_suffix(normalized, minimum_stem_length=2) not in excluded
+            and any(character.isalpha() for character in normalized)
+        ):
+            frequencies[normalized] = count
+    return frequencies
 
 
 def _plot_wordcloud_unavailable(output_dir: Path, message: str) -> Path:

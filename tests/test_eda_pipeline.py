@@ -6,7 +6,10 @@ from pathlib import Path
 from attention_maps.eda.cli import load_plan
 from attention_maps.eda.contracts import AnalysisConfig, DatasetSpec, SurveyPlan
 from attention_maps.eda.pipeline import analyze_records, run_survey, select_datasets
-from attention_maps.eda.reporting import write_survey_report
+from attention_maps.eda.reporting import (
+    _eligible_wordcloud_frequencies,
+    write_survey_report,
+)
 from attention_maps.eda.deduplication import (
     DeduplicationConfig,
     MultiStageDeduplicator,
@@ -340,6 +343,23 @@ class EDAAnalysisTests(unittest.TestCase):
         self.assertIn(("नेपाल", "मन्त्रालय"), edges)
         self.assertIn(("मन्त्रालय", "सरकार"), edges)
         self.assertNotIn(("कार्यालय", "सूचना"), edges)
+
+    def test_wordcloud_never_restores_filtered_stopwords(self):
+        frequencies = _eligible_wordcloud_frequencies(
+            (
+                ("सबै", 100),
+                ("सबैलाई", 90),
+                ("गर्दा", 80),
+                ("नेपाल", 20),
+            ),
+            ("सबै", "गर्दा"),
+        )
+
+        self.assertEqual(frequencies, {"नेपाल": 20})
+        self.assertEqual(
+            _eligible_wordcloud_frequencies((("सबै", 100),), ("सबै",)),
+            {},
+        )
 
     def test_survey_isolates_dataset_failure(self):
         plan = SurveyPlan(
