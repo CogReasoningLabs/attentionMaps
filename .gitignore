@@ -62,3 +62,11 @@ core
 core.*
 *.tmp
 *.temp
+
+# Google Drive auth
+credentials.json
+client_secret*.json
+token.json
+
+# Local Google Drive upload smoke-test files
+upload_test_folder/
