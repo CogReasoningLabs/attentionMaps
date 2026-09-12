@@ -7,7 +7,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from itertools import islice
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from attention_maps.inference.comparison import ComparisonResult
 

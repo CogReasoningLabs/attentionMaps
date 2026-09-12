@@ -8,7 +8,6 @@ from attention_maps.inference.iriis_gpt2 import (
     IRIIS_GPT2_SPECS,
     IRIISGPT2Backend,
     IRIISGPT2Bundle,
-    generate_iriis_gpt2,
     load_iriis_gpt2,
 )
 

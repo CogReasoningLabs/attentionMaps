@@ -38,6 +38,12 @@ class PretrainingDataStageTests(unittest.TestCase):
         self.assertNotIn("AI", text)
         self.assertNotIn("tracking", text)
         self.assertNotIn("example.com", text)
+        metadata = json.loads(row["metadata_json"])
+        self.assertEqual(
+            metadata["cleaning"]["input_script_category"],
+            "Mixed(Nepali+English)",
+        )
+        self.assertEqual(metadata["cleaning"]["output_script_category"], "Devanagari")
 
     def test_processed_builder_consumes_canonical_cleaned_sources(self) -> None:
         import pyarrow as pa

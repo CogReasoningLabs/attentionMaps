@@ -1,5 +1,9 @@
 # Attention visualization
 
+> **Status:** prototype command-line foundation from earlier model experiments.
+> The planned model/attention path still needs frozen datasets, controlled
+> checkpoints, validated extraction, research questions, and an interactive UI.
+
 Attention visualization is an independent package rather than part of training
 or inference:
 

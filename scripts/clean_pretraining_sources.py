@@ -21,6 +21,7 @@ if __package__:
         CleaningConfig,
         clean_text_with_result,
         devanagari_letter_stats,
+        identify_script_category,
     )
 else:
     from build_pretraining_dataset import (
@@ -32,6 +33,7 @@ else:
         CleaningConfig,
         clean_text_with_result,
         devanagari_letter_stats,
+        identify_script_category,
     )
 
 
@@ -193,10 +195,12 @@ def clean_candidate(candidate: Candidate, config: CleaningConfig) -> tuple[dict 
     metadata = {
         **candidate.metadata,
         "cleaning": {
+            "input_script_category": result.script_category,
             "input_devanagari_ratio": round(result.devanagari_ratio, 6),
             "input_devanagari_letters": result.devanagari_letters,
             "output_devanagari_ratio": round(output_ratio, 6),
             "output_devanagari_letters": output_letters,
+            "output_script_category": identify_script_category(result.text),
         },
     }
     return {

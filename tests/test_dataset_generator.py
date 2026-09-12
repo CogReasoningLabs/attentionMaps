@@ -127,9 +127,9 @@ class DatasetGeneratorPersistenceTests(unittest.TestCase):
             ledger = _GenerationRateLedger(Path(directory) / "limits.sqlite3")
             waits = []
             with patch(
-                "apps.dataset_generator.time.time",
+                "attention_maps.generation.persistence.time.time",
                 side_effect=[100.0, 100.0, 161.0],
-            ), patch("apps.dataset_generator.time.sleep") as sleep:
+            ), patch("attention_maps.generation.persistence.time.sleep") as sleep:
                 ledger.wait_and_record("fake:model", per_minute=1, per_day=5)
                 ledger.wait_and_record(
                     "fake:model",
@@ -225,6 +225,22 @@ class DatasetGeneratorAppTests(unittest.TestCase):
         self.assertTrue(
             any(
                 item.label == "Local model device"
+                for item in app.selectbox
+            )
+        )
+        collection_selector = next(
+            item for item in app.radio if item.label == "Dataset collection"
+        )
+        self.assertIn(
+            "Synthetic data generation",
+            collection_selector.options,
+        )
+        collection_selector.set_value("Synthetic data generation").run(
+            timeout=30
+        )
+        self.assertTrue(
+            any(
+                item.label == "Dataset variant"
                 for item in app.selectbox
             )
         )

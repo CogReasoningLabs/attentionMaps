@@ -1,5 +1,10 @@
 # Model inference and attention
 
+> **Project status:** this is a reference for experimental model tooling that
+> already exists. The active phase is dataset exploration, cleaning design, and
+> synthetic-data generation. A controlled model-building and comparative
+> attention study is planned after the datasets are reviewed and versioned.
+
 The repository supports three distinct model workflows. They should not share
 loading logic because their objectives and runtime dependencies differ.
 
@@ -139,4 +144,3 @@ Detailed parameters are documented in
 [attention visualization](attention-visualization.md),
 [NepBERTa inference](scripts/infer-nepberta.md), and
 [Himalaya Gemma inference](scripts/infer-himalaya-gemma.md).
-

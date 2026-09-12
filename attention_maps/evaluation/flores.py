@@ -7,12 +7,6 @@ from itertools import islice
 from typing import Any, Iterable, Sequence
 
 from attention_maps.inference.comparison import ComparisonResult
-from attention_maps.inference.gemini_translation import (
-    LIMA_TEACHER_MODEL,
-    LIMA_TEACHER_TEMPERATURE,
-    LIMA_TEACHER_TOP_K,
-    LIMA_TEACHER_TOP_P,
-)
 
 
 FLORES_DATASET_ID = "yash9439/flores200"
