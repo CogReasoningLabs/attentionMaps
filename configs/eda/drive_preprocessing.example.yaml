@@ -1,0 +1,45 @@
+run_name: nepali-corpus-example
+output_root: ../../data/pipeline-runs
+
+input:
+  # Use exactly one: local_path or google_drive.
+  google_drive: "https://drive.google.com/drive/folders/REPLACE_WITH_SOURCE_ID"
+  text_columns: [text]
+  source_columns: [source]
+
+destination_drive_folder_id: "REPLACE_WITH_DESTINATION_FOLDER_ID"
+
+sampling:
+  fraction: 1.0
+  max_records: null
+  seed: 42
+
+cleaning:
+  min_tokens: 5
+  min_devanagari_ratio: 0.70
+
+deduplication:
+  mode: multistage
+  near_duplicate_threshold: 0.80
+  minhash_permutations: 128
+  minhash_bands: 16
+  shingle_size: 5
+  edit_similarity_threshold: 0.80
+  boilerplate_min_documents: 3
+  boilerplate_min_characters: 40
+
+execution:
+  batch_size: 512
+  batch_max_mib: 64
+  workers: 8
+  max_pending_batches: 16
+  shard_rows: 50000
+  drive_chunk_mib: 8
+
+eda:
+  enabled: true
+  top_items: 100
+  max_vocabulary: 500000
+  max_ngrams: 250000
+  reservoir_size: 10000
+  max_pattern_tokens_per_document: 5000

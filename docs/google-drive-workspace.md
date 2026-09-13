@@ -18,8 +18,10 @@ recursive directory structure is preserved, and Shared Drive requests include
      download its JSON outside the repository, and select **Browser OAuth** in
      Streamlit. The first upload opens Google sign-in and creates a local token
      cache with user-only file permissions.
-3. Share the destination folder or Shared Drive with the authenticated user or
-   service-account email.
+3. Share the destination folder or Shared Drive with the authenticated user.
+   A service account can upload only when the destination is a Shared Drive (or
+   it impersonates a quota-bearing Workspace user); sharing a personal My Drive
+   folder does not give the service account storage quota.
 4. Optionally set the common team destination:
 
    ```bash
@@ -55,6 +57,11 @@ python scripts/upload_to_google_drive.py path/to/file-or-folder \
   --parent-folder-id "your-folder-id" \
   --oauth-client-secrets /secure/path/desktop-client.json
 ```
+
+Personal My Drive destinations must use this user OAuth flow. A service account
+may be able to create an empty folder there but the subsequent file upload will
+fail with `storageQuotaExceeded` because service accounts have no personal
+Drive storage quota.
 
 Use `--credentials-file path/to/service-account.json` only when ADC is not
 already configured. Use `--impersonate-user user@example.org` only after a
