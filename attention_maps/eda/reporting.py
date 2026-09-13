@@ -98,6 +98,10 @@ def _write_profile(profile: DatasetProfile, output_dir: Path) -> list[Path]:
             [{"token": token, "count": count} for token, count in profile.top_tokens],
         ),
         _write_csv(
+            output_dir / "top_1grams.csv",
+            [{"ngram": token, "count": count} for token, count in profile.top_tokens],
+        ),
+        _write_csv(
             output_dir / "top_sources.csv",
             [
                 {"source": source, "count": count}
@@ -364,7 +368,7 @@ def plot_deduplication_stages(profile: DatasetProfile, output_dir: Path) -> Path
     import matplotlib.pyplot as plt
 
     _configure_plotting(plt)
-    labels = ("Exact SHA-256", "Near MinHash-LSH", "Boilerplate affected")
+    labels = ("Exact SHA-256", "Verified near duplicate", "Boilerplate affected")
     values = (
         profile.summary.exact_duplicate_rows,
         profile.summary.near_duplicate_rows,
@@ -379,7 +383,8 @@ def plot_deduplication_stages(profile: DatasetProfile, output_dir: Path) -> Path
         -0.2,
         (
             f"{profile.summary.dedup_normalization} → SHA-256; "
-            f"MinHash threshold={profile.summary.near_duplicate_threshold:.2f}; "
+            f"token 5-gram Jaccard≥{profile.summary.near_duplicate_threshold:.2f}, "
+            f"edit similarity≥{profile.summary.edit_similarity_threshold:.2f}; "
             "boilerplate is flagged, not removed"
         ),
         transform=axis.transAxes,

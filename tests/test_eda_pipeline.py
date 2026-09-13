@@ -157,6 +157,35 @@ class EDASchemaTests(unittest.TestCase):
         self.assertEqual(boilerplate_result.unique_repeated_paragraphs, 1)
         self.assertEqual(boilerplate_result.affected_documents, 2)
 
+    def test_edit_similarity_rejects_reordered_token_set(self):
+        config = DeduplicationConfig(
+            shingle_size=1,
+            minhash_permutations=16,
+            minhash_bands=4,
+            near_duplicate_threshold=1.0,
+            edit_similarity_threshold=0.80,
+        )
+        deduplicator = MultiStageDeduplicator(config)
+        original = "एक दुई तीन चार पाँच छ सात आठ नौ दस"
+        reordered = "दस नौ आठ सात छ पाँच चार तीन दुई एक"
+
+        self.assertFalse(deduplicator.observe(original).duplicate)
+        self.assertFalse(deduplicator.observe(reordered).duplicate)
+
+    def test_token_near_duplicate_ignores_punctuation_only_changes(self):
+        config = DeduplicationConfig(
+            minhash_permutations=16,
+            minhash_bands=4,
+            near_duplicate_threshold=1.0,
+            edit_similarity_threshold=1.0,
+        )
+        deduplicator = MultiStageDeduplicator(config)
+        original = "नेपाल सुन्दर देश हो र यहाँ धेरै भाषा बोलिन्छ।"
+        punctuation_changed = "नेपाल सुन्दर देश हो, र यहाँ धेरै भाषा बोलिन्छ!"
+
+        self.assertFalse(deduplicator.observe(original).duplicate)
+        self.assertTrue(deduplicator.observe(punctuation_changed).near_duplicate)
+
     def test_identifies_all_supported_script_categories(self):
         cases = {
             DEVANAGARI: "नेपाल सुन्दर देश हो",
@@ -254,7 +283,7 @@ class EDAAnalysisTests(unittest.TestCase):
         records = [
             {"text": nepali_document, "source": "a"},
             {"text": nepali_document, "source": "a"},
-            {"text": f"{nepali_document} सुन्दर देश", "source": "b"},
+            {"text": f"{nepali_document} नेपाल सुन्दर", "source": "b"},
             {"text": "english only words here", "source": "b"},
             {"other": "missing"},
         ]

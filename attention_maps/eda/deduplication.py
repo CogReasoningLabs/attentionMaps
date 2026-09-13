@@ -1,13 +1,17 @@
-"""Sequential exact, MinHash-LSH, and boilerplate duplicate diagnostics."""
+"""Sequential exact, verified MinHash-LSH, and boilerplate diagnostics."""
 
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import re
 import unicodedata
+from array import array
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+
+from .text import tokenize
 
 
 _MERSENNE_PRIME = (1 << 61) - 1
@@ -25,6 +29,7 @@ class DeduplicationConfig:
     minhash_permutations: int = 128
     minhash_bands: int = 16
     near_duplicate_threshold: float = 0.80
+    edit_similarity_threshold: float = 0.80
     boilerplate_min_documents: int = 3
     boilerplate_min_characters: int = 40
     seed: int = 42
@@ -44,6 +49,8 @@ class DeduplicationConfig:
             raise ValueError("minhash_bands must divide minhash_permutations")
         if not 0 < self.near_duplicate_threshold <= 1:
             raise ValueError("near_duplicate_threshold must be in (0, 1]")
+        if not 0 < self.edit_similarity_threshold <= 1:
+            raise ValueError("edit_similarity_threshold must be in (0, 1]")
         if self.boilerplate_min_documents < 2:
             raise ValueError("boilerplate_min_documents must be at least 2")
         if self.boilerplate_min_characters <= 0:
@@ -96,12 +103,85 @@ def exact_sha256(text: str, config: DeduplicationConfig) -> bytes:
     return hashlib.sha256(normalized.encode("utf-8")).digest()
 
 
-def character_shingles(text: str, size: int) -> set[str]:
-    if not text:
-        return set()
-    if len(text) <= size:
-        return {text}
-    return {text[index : index + size] for index in range(len(text) - size + 1)}
+@dataclass(frozen=True)
+class _DocumentFingerprint:
+    token_hashes: array
+    shingle_hashes: array
+
+
+def _stable_hash(value: str, *, purpose: bytes) -> int:
+    return int.from_bytes(
+        hashlib.blake2b(
+            value.encode("utf-8"), digest_size=8, person=purpose
+        ).digest(),
+        "big",
+    )
+
+
+def _document_fingerprint(text: str, shingle_size: int) -> _DocumentFingerprint:
+    tokens = tokenize(text)
+    token_hashes = array(
+        "Q", (_stable_hash(token, purpose=b"dedup-token") for token in tokens)
+    )
+    if len(tokens) < shingle_size:
+        return _DocumentFingerprint(token_hashes, array("Q"))
+    shingles = {
+        _stable_hash(
+            "\x1f".join(tokens[index : index + shingle_size]),
+            purpose=b"dedup-shingle",
+        )
+        for index in range(len(tokens) - shingle_size + 1)
+    }
+    return _DocumentFingerprint(token_hashes, array("Q", sorted(shingles)))
+
+
+def _sorted_jaccard(left: array, right: array) -> float:
+    if not left and not right:
+        return 1.0
+    left_index = right_index = intersection = 0
+    while left_index < len(left) and right_index < len(right):
+        if left[left_index] == right[right_index]:
+            intersection += 1
+            left_index += 1
+            right_index += 1
+        elif left[left_index] < right[right_index]:
+            left_index += 1
+        else:
+            right_index += 1
+    return intersection / (len(left) + len(right) - intersection)
+
+
+def _edit_similarity_at_least(left: array, right: array, threshold: float) -> bool:
+    """Use banded token Levenshtein distance to test normalized similarity."""
+
+    maximum_length = max(len(left), len(right))
+    if maximum_length == 0:
+        return True
+    distance_limit = math.floor((1.0 - threshold) * maximum_length + 1e-12)
+    if abs(len(left) - len(right)) > distance_limit:
+        return False
+
+    previous = {
+        column: column for column in range(0, min(len(right), distance_limit) + 1)
+    }
+    sentinel = distance_limit + 1
+    for row in range(1, len(left) + 1):
+        first_column = max(0, row - distance_limit)
+        last_column = min(len(right), row + distance_limit)
+        current: dict[int, int] = {}
+        if first_column == 0:
+            current[0] = row
+        for column in range(max(1, first_column), last_column + 1):
+            current[column] = min(
+                previous.get(column, sentinel) + 1,
+                current.get(column - 1, sentinel) + 1,
+                previous.get(column - 1, sentinel)
+                + (left[row - 1] != right[column - 1]),
+            )
+        if not current or min(current.values()) > distance_limit:
+            return False
+        previous = current
+    return previous.get(len(right), sentinel) <= distance_limit
 
 
 class _MinHashLSHIndex:
@@ -115,57 +195,43 @@ class _MinHashLSHIndex:
             )
             for _ in range(config.minhash_permutations)
         )
-        self.signatures: list[tuple[int, ...]] = []
         self.buckets: dict[tuple[int, tuple[int, ...]], list[int]] = defaultdict(list)
         self.rows_per_band = config.minhash_permutations // config.minhash_bands
 
-    def signature(self, text: str) -> tuple[int, ...]:
-        shingles = character_shingles(text, self.config.shingle_size)
+    def signature(self, shingles: array) -> tuple[int, ...]:
         if not shingles:
             return tuple([_MAX_HASH] * self.config.minhash_permutations)
-        hashes = tuple(
-            int.from_bytes(
-                hashlib.blake2b(value.encode("utf-8"), digest_size=8).digest(),
-                "big",
-            )
-            for value in shingles
-        )
         return tuple(
-            min((coefficient * value + offset) % _MERSENNE_PRIME for value in hashes)
+            min(
+                (coefficient * value + offset) % _MERSENNE_PRIME
+                for value in shingles
+            )
             for coefficient, offset in self.coefficients
         )
 
-    def contains_near(self, signature: tuple[int, ...]) -> bool:
+    def candidates(self, signature: tuple[int, ...]) -> set[int]:
         candidates: set[int] = set()
         for band in range(self.config.minhash_bands):
             start = band * self.rows_per_band
             key = (band, signature[start : start + self.rows_per_band])
             candidates.update(self.buckets[key])
-        for candidate in candidates:
-            other = self.signatures[candidate]
-            estimated_jaccard = sum(
-                left == right for left, right in zip(signature, other)
-            ) / len(signature)
-            if estimated_jaccard >= self.config.near_duplicate_threshold:
-                return True
-        return False
+        return candidates
 
-    def add(self, signature: tuple[int, ...]) -> None:
-        index = len(self.signatures)
-        self.signatures.append(signature)
+    def add(self, signature: tuple[int, ...], document_index: int) -> None:
         for band in range(self.config.minhash_bands):
             start = band * self.rows_per_band
             key = (band, signature[start : start + self.rows_per_band])
-            self.buckets[key].append(index)
+            self.buckets[key].append(document_index)
 
 
 class MultiStageDeduplicator:
-    """Observe documents sequentially, retaining only bounded comparison state."""
+    """Observe documents sequentially, retaining compact comparison fingerprints."""
 
     def __init__(self, config: DeduplicationConfig):
         self.config = config
         self.exact_hashes: set[bytes] = set()
         self.near_index = _MinHashLSHIndex(config)
+        self.near_fingerprints: list[_DocumentFingerprint] = []
         self.document_paragraphs: list[frozenset[bytes]] = []
         self.paragraph_counts: Counter[bytes] = Counter()
 
@@ -181,9 +247,27 @@ class MultiStageDeduplicator:
             return DuplicateDecision(exact_duplicate=True)
         self.exact_hashes.add(digest)
 
-        signature = self.near_index.signature(normalized)
-        near_duplicate = self.near_index.contains_near(signature)
-        self.near_index.add(signature)
+        fingerprint = _document_fingerprint(normalized, self.config.shingle_size)
+        near_duplicate = False
+        if fingerprint.shingle_hashes:
+            signature = self.near_index.signature(fingerprint.shingle_hashes)
+            for candidate_index in sorted(self.near_index.candidates(signature)):
+                candidate = self.near_fingerprints[candidate_index]
+                if (
+                    _sorted_jaccard(
+                        fingerprint.shingle_hashes, candidate.shingle_hashes
+                    )
+                    >= self.config.near_duplicate_threshold
+                    and _edit_similarity_at_least(
+                        fingerprint.token_hashes,
+                        candidate.token_hashes,
+                        self.config.edit_similarity_threshold,
+                    )
+                ):
+                    near_duplicate = True
+                    break
+            self.near_index.add(signature, len(self.near_fingerprints))
+        self.near_fingerprints.append(fingerprint)
         if near_duplicate:
             return DuplicateDecision(near_duplicate=True)
 
