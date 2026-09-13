@@ -80,6 +80,7 @@ class AnalysisConfig:
     minhash_permutations: int = 128
     minhash_bands: int = 16
     near_duplicate_threshold: float = 0.80
+    edit_similarity_threshold: float = 0.80
     boilerplate_min_documents: int = 3
     boilerplate_min_characters: int = 40
     ngram_orders: tuple[int, ...] = (2, 3, 4)
@@ -124,6 +125,8 @@ class AnalysisConfig:
             raise ValueError("minhash_bands must divide minhash_permutations")
         if not 0 < self.near_duplicate_threshold <= 1:
             raise ValueError("near_duplicate_threshold must be in (0, 1]")
+        if not 0 < self.edit_similarity_threshold <= 1:
+            raise ValueError("edit_similarity_threshold must be in (0, 1]")
         if self.boilerplate_min_documents < 2:
             raise ValueError("boilerplate_min_documents must be at least 2")
         if not self.ngram_orders:
@@ -232,6 +235,7 @@ class DatasetSummary:
     minhash_permutations: int
     minhash_bands: int
     near_duplicate_threshold: float
+    edit_similarity_threshold: float
     boilerplate_unique_paragraphs: int
     boilerplate_paragraph_occurrences: int
     boilerplate_affected_rows: int

@@ -21,7 +21,8 @@ schema adapter ──> Unicode/token metrics ──> bounded accumulators
 ```
 
 The analyzer never persists raw sampled text. It retains SHA-256 digests,
-MinHash signatures/LSH buckets, normalized paragraph digests, bounded
+compact token/shingle fingerprints, MinHash signatures/LSH buckets, normalized
+paragraph digests, bounded
 token/source/pattern counters, and deterministic reservoirs of numeric metrics
 for quantiles and plots.
 
@@ -47,10 +48,12 @@ documented in [eda-cleaning-notes.md](eda-cleaning-notes.md).
   token window. An edge count is the number of documents containing that local
   pairing; repeated occurrences in the same document count once.
 - Provenance: configured or automatically detected source/domain fields.
-- Duplicates: normalized SHA-256 exact matching, character-shingle MinHash-LSH
-  near-document screening, and repeated normalized paragraph evidence.
+- Duplicates: normalized SHA-256 exact matching, token-shingle MinHash-LSH
+  candidate retrieval followed by exact Jaccard and normalized token
+  edit-similarity verification, plus repeated normalized paragraph evidence.
 
-Near-duplicate counts are screening estimates, not ground truth. Type-token
+Near-duplicate counts are verified candidates but are not ground truth until
+the thresholds have been calibrated on labeled Nepali pairs. Type-token
 ratio becomes a documented lower bound when the vocabulary cap is reached.
 Quantiles and distribution plots come from deterministic reservoir samples;
 means, maxima, counts, and rates are computed over every usable streamed row.
