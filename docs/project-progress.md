@@ -1,7 +1,8 @@
 # Project progress
 
-> Active multi-dataset EDA work on `feature/multi-dataset-eda` is tracked in
-> [eda-survey-progress.md](eda-survey-progress.md).
+> The current batched materialization work is tracked in
+> [drive-preprocessing-progress.md](drive-preprocessing-progress.md). Earlier
+> survey work remains recorded in [eda-survey-progress.md](eda-survey-progress.md).
 
 This document separates current research from earlier experimental foundations.
 Generated datasets, caches, checkpoints, and run artifacts are intentionally
@@ -77,6 +78,8 @@ base checkpoint passes a fixed Nepali evaluation set.
 | Dataset building | Deterministic source sampling, exact-text deduplication, and document-level train/validation/test splitting |
 | Dataset explorer | Provider/lineage and purpose taxonomy, dependent filters, local/remote inspection, complete-record views, bounded EDA, tokenizer/model comparison, and evaluation tabs |
 | Survey EDA | Incremental size/script/quality/provenance metrics, exact and approximate duplicate screening, n-grams, co-occurrence networks, evidence exports, and in-app methodology notes |
+| Batched corpus materialization | Local/Drive ingestion, deterministic sampling, bounded process workers, clean Parquet shards, verified exact/near deduplication, paragraph removal, EDA/PDF generation, checksums, Zip64 packaging, and optional Drive upload |
+| Drive transfer diagnostics | Standalone recursive download/upload timing, native Google file export, resumable chunks, and JSON throughput evidence |
 | Synthetic generation | Registry-driven family/variant selection shared by both apps, live bounded generation, rate accounting, run persistence, and JSONL/CSV exports |
 | Tokenization | Tried an available third-party Hugging Face BPE tokenizer; also retained a separate custom-BPE experiment path |
 | Materialized training data | Document token IDs stored in Parquet and packed into fixed causal training blocks |
@@ -151,9 +154,14 @@ documentation, and notebooks. These local products are excluded by
 
 ## Current phase and roadmap
 
-The current phase is dataset research. Survey results are diagnostic and
-bounded unless the UI reports full population coverage. Cleaning and
-deduplication are documented but do not yet rewrite source datasets. Synthetic
+The current phase is dataset research and auditable corpus materialization.
+Survey results remain diagnostic and bounded unless the UI reports full
+population coverage. The new batch pipeline writes clean, immutable outputs
+without rewriting source datasets. It currently treats an input tree as one
+corpus. A new report-only explorer tab performs sampled within-dataset
+deduplication and indexed directional inter-dataset containment for two or more
+catalog datasets without removing rows. A formal source manifest and persisted
+cross-source cluster data remain the next data-contract changes. Synthetic
 generation has a reusable application foundation, with LIMA translation as the
 first registered family.
 
@@ -176,10 +184,11 @@ End-to-end Gemma generation still needs confirmation on the target GPU.
 
 The next implementation sequence is:
 
-1. validate every catalog schema/revision and complete the comparative dataset
-   survey;
-2. approve quality, provenance, license, and exact/near-duplicate policies,
-   then materialize auditable versioned datasets without changing raw inputs;
+1. define a source manifest for all logical datasets, validate their
+   schemas/revisions, and complete the comparative dataset survey;
+2. validate the new sampled within-dataset and directional inter-dataset
+   overlap metrics, then approve quality, provenance, license, keeper, and
+   threshold policies before persisting clusters or enabling removal;
 3. expand the synthetic-family registry only for reviewed pipeline contracts
    and freeze generated dataset versions with complete lineage;
 4. establish fixed Nepali evaluation sets and use them to choose a base model
@@ -201,4 +210,5 @@ planned work, not current capabilities.
 - [Modularization guardrails](modularization.md)
 - [Detailed script reference](scripts/README.md)
 - [Multi-dataset EDA survey progress](eda-survey-progress.md)
+- [Drive preprocessing and deduplication progress](drive-preprocessing-progress.md)
 - [Corpus survey EDA methodology](eda-survey-methodology.md)

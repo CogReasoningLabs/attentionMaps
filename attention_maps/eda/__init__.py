@@ -8,6 +8,12 @@ from attention_maps.eda.contracts import (
     SurveyRun,
 )
 from attention_maps.eda.pipeline import analyze_records, run_survey
+from attention_maps.eda.overlap import (
+    DatasetDeduplicationSummary,
+    DatasetOverlapAnalysis,
+    DirectionalContainment,
+    analyze_dataset_overlap,
+)
 from attention_maps.eda.deduplication import (
     DeduplicationConfig,
     MultiStageDeduplicator,
@@ -36,6 +42,8 @@ from attention_maps.eda.workspace import (
 __all__ = [
     "AnalysisConfig",
     "DatasetProfile",
+    "DatasetDeduplicationSummary",
+    "DatasetOverlapAnalysis",
     "DatasetSpec",
     "DeduplicationConfig",
     "MultiStageDeduplicator",
@@ -43,12 +51,14 @@ __all__ = [
     "RepeatedSamplingPlan",
     "SurveyPlan",
     "SurveyRun",
+    "DirectionalContainment",
     "SCRIPT_CATEGORIES",
     "ScriptEvidence",
     "WorkspaceDeduplicationResult",
     "WorkspaceDocument",
     "WorkspaceRemoval",
     "analyze_records",
+    "analyze_dataset_overlap",
     "deduplicate_workspace_documents",
     "identify_script_category",
     "fold_seed",

@@ -23,6 +23,8 @@ step.
 | `download_nepali_pretrain_corpus.py` | CLI | Download versioned Hugging Face Parquet sources into immutable raw storage | [Download reference](download-nepali-pretrain-corpus.md) |
 | `clean_pretraining_sources.py` | CLI | Clean and canonicalize PDF, news, and song documents independently | [Cleaning reference](../cleaning-cli-reference.md) |
 | `build_pretraining_dataset.py` | CLI | Sample sources, deduplicate, and create deterministic train/validation/test Parquet files | [Build/split reference](build-pretraining-dataset.md) |
+| `run_drive_preprocessing_pipeline.py` | CLI | Download, sample, batch-clean, deduplicate, profile, package, and optionally upload a corpus | [Drive batch pipeline](drive-preprocessing-pipeline.md) |
+| `check_google_drive_transfer.py` | CLI | Download and re-upload a Drive file/folder while timing both phases | [Transfer check](drive-preprocessing-pipeline.md#standalone-drive-transfer-check) |
 | `tokenize_pretraining_data.py` | Compatibility CLI | Forwards to `attention_maps.tokenization`; new workflows should use the package command | [Tokenization reference](tokenize-pretraining-data.md) |
 | `infer_nepberta.py` | Compatibility CLI | Forwards to `attention_maps.inference.nepberta` | [NepBERTa reference](infer-nepberta.md) |
 | `infer_himalaya_gemma.py` | Compatibility CLI | Loads the Himalaya Gemma 4 base model plus its PEFT adapter for generation | [Himalaya Gemma reference](infer-himalaya-gemma.md) |
@@ -31,6 +33,10 @@ step.
 | `utils/nepali_text.py` | Internal API | Shared Unicode, markup, language-ratio, and strict-character cleaning functions | [Utility API reference](nepali-text-utilities.md) |
 | `utils/tokenization.py` | Compatibility import | Re-exports `attention_maps.tokenization.pipeline` for older imports | [Tokenization reference](tokenize-pretraining-data.md#modular-code-boundary) |
 | `__init__.py`, `utils/__init__.py` | Package markers | Make imports reliable; they are not commands | No parameters |
+
+Current implementation status, verification evidence, limitations, and the
+source-aware deduplication roadmap are recorded in
+[Drive preprocessing progress](../drive-preprocessing-progress.md).
 
 ## Typical workflow
 

@@ -640,8 +640,16 @@ class DatasetExplorerAppTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            '["WORKSPACE", "Source sample", "Inference", "Metadata"]', source
+            '["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]',
+            source,
         )
+        overlap_source = (
+            Path(__file__).resolve().parents[1]
+            / "apps/explorer_tabs/overlap.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Calculate selected dataset overlaps", overlap_source)
+        self.assertIn("Directional cross-dataset containment", overlap_source)
+        self.assertIn("Report-only analysis", overlap_source)
         for removed_tab in (
             '"Survey EDA"',
             '"EDA & cleaning notes"',

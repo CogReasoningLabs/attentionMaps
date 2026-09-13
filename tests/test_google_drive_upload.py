@@ -5,6 +5,8 @@ from pathlib import Path
 from attention_maps.common.google_drive import (
     MIN_CHUNK_SIZE,
     build_google_drive_service,
+    download_google_drive_path,
+    extract_google_drive_id,
     upload_path_to_google_drive,
 )
 
@@ -56,6 +58,16 @@ class _DriveService:
 
 
 class GoogleDriveUploadTests(unittest.TestCase):
+    def test_extracts_file_and_folder_ids_from_sharing_links(self):
+        self.assertEqual(
+            extract_google_drive_id("https://drive.google.com/drive/folders/folder-1"),
+            "folder-1",
+        )
+        self.assertEqual(
+            extract_google_drive_id("https://drive.google.com/file/d/file-1/view"),
+            "file-1",
+        )
+
     def test_rejects_multiple_authentication_modes(self):
         with self.assertRaisesRegex(ValueError, "either service-account"):
             build_google_drive_service(
@@ -117,6 +129,96 @@ class GoogleDriveUploadTests(unittest.TestCase):
                     service=_DriveService(),
                     media_upload_factory=lambda *args, **kwargs: object(),
                 )
+
+    def test_downloads_a_drive_file_to_a_bounded_local_target(self):
+        class DownloadFiles:
+            def get(self, **kwargs):
+                return _ExecuteRequest(
+                    {
+                        "id": kwargs["fileId"],
+                        "name": "dataset.jsonl",
+                        "mimeType": "application/json",
+                        "size": "4",
+                    }
+                )
+
+            def get_media(self, **kwargs):
+                return kwargs
+
+        class DownloadService:
+            def files(self):
+                return DownloadFiles()
+
+        class Downloader:
+            def __init__(self, stream, request, chunksize):
+                self.stream = stream
+                self._progress = 0
+
+            def next_chunk(self, num_retries):
+                self.stream.write(b"data")
+                return None, True
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = download_google_drive_path(
+                "file-1",
+                Path(directory) / "input",
+                service=DownloadService(),
+                media_download_factory=Downloader,
+            )
+            content = (result.destination / "dataset.jsonl").read_bytes()
+
+        self.assertEqual(content, b"data")
+        self.assertEqual(result.files_downloaded, 1)
+
+    def test_exports_a_native_google_document_as_pdf(self):
+        class DownloadFiles:
+            def __init__(self):
+                self.export_calls = []
+
+            def get(self, **kwargs):
+                return _ExecuteRequest(
+                    {
+                        "id": kwargs["fileId"],
+                        "name": "Survey Notes",
+                        "mimeType": "application/vnd.google-apps.document",
+                    }
+                )
+
+            def export_media(self, **kwargs):
+                self.export_calls.append(kwargs)
+                return kwargs
+
+        class DownloadService:
+            def __init__(self):
+                self.resource = DownloadFiles()
+
+            def files(self):
+                return self.resource
+
+        class Downloader:
+            def __init__(self, stream, request, chunksize):
+                self.stream = stream
+
+            def next_chunk(self, num_retries):
+                self.stream.write(b"%PDF")
+                return None, True
+
+        service = DownloadService()
+        with tempfile.TemporaryDirectory() as directory:
+            result = download_google_drive_path(
+                "native-doc-1",
+                Path(directory) / "input",
+                service=service,
+                media_download_factory=Downloader,
+            )
+            content = (result.destination / "Survey Notes.pdf").read_bytes()
+
+        self.assertEqual(content, b"%PDF")
+        self.assertEqual(result.bytes_downloaded, 4)
+        self.assertEqual(
+            service.resource.export_calls,
+            [{"fileId": "native-doc-1", "mimeType": "application/pdf"}],
+        )
 
 
 if __name__ == "__main__":

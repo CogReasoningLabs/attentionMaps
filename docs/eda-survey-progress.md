@@ -4,6 +4,8 @@ Branch: `feature/multi-dataset-eda`
 
 This is the active work log for the corpus-survey EDA foundation. The broader
 project history remains in [project-progress.md](project-progress.md).
+Later batched materialization and verified-near-dedup work is tracked in
+[drive-preprocessing-progress.md](drive-preprocessing-progress.md).
 
 ## Objective
 
@@ -65,6 +67,9 @@ direct copy.
   and expose full-population mode for UI-safe corpora.
 - [x] Add three-stage duplicate diagnostics with explicit normalization and
   hashing settings, per-fold UI metrics, CSV evidence, and a figure.
+- [x] Upgrade near-duplicate acceptance from character-signature similarity to
+  token-shingle MinHash candidates verified by exact Jaccard and normalized
+  token edit similarity.
 - [x] Add a per-dataset Streamlit WORKSPACE with separately gated sampling,
   NFC-normalization, and materialized multi-stage deduplication buttons; persist
   timestamped clean JSONL/audit manifests and unlock EDA only for clean data.
@@ -90,9 +95,10 @@ direct copy.
   streamed slice and pin repository revisions for the final survey run.
 - [ ] Decide which corpora belong in pretraining, SFT, evaluation, or mixed
   survey strata before interpreting a single combined ranking.
-- [ ] Generalize cleaning beyond the implemented local PDF/news/lyrics cleaner
-  and add reviewed near-deduplication materialization; current Survey EDA
-  duplicate metrics remain read-only screening evidence.
+- [ ] Generalize the new materialization pipeline from a single combined input
+  corpus to explicit logical datasets with within-dataset and inter-dataset
+  duplicate evidence. A minimal report-only explorer calculation is available,
+  but it is sampled and session-only; Survey EDA remains read-only evidence.
 
 ## Next work
 
@@ -103,8 +109,10 @@ direct copy.
   and sensitive-content diagnostic plugins.
 - [ ] Add bootstrap confidence intervals so dataset comparisons do not present
   sample estimates as exact population values.
-- [ ] Add a cross-dataset Streamlit queue for launching and comparing several
-  selected corpora in one unattended survey run.
+- [x] Add a minimal cross-dataset Streamlit view for two selected corpora or
+  every pair among a larger selection, with a directional containment matrix.
+- [ ] Add an unattended cross-dataset queue, persisted duplicate-cluster
+  provenance, confidence intervals, and quality-aware source selection reports.
 - [ ] Register additional synthetic dataset families only after their source,
   transformation, output schema, purpose, and provenance rules are reviewed.
 

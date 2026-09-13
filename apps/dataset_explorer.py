@@ -57,6 +57,7 @@ from apps.explorer_tabs import (
     render_details_tab,
     render_inference_hub,
     render_manifest_tab,
+    render_overlap_tab,
     render_sample_tab,
     render_workspace_tab,
 )
@@ -78,7 +79,8 @@ def run_app() -> None:
     st.title("Dataset Preprocessing & EDA Workspace")
     st.caption(
         "Select a dataset, verify its source and schema, then run Sampling → "
-        "NFC normalization → Deduplication → EDA on the preprocessed output."
+        "NFC normalization → Deduplication → EDA on the preprocessed output, "
+        "or compare report-only overlap across catalog datasets."
     )
 
     @st.cache_data(show_spinner=False)
@@ -136,6 +138,14 @@ def run_app() -> None:
     data_root = Path(data_root_text).expanduser()
     use_custom = source_settings.checkbox("Use custom Parquet path")
 
+    pipeline_specs = discover_datasets(data_root)
+    external_specs = []
+    external_specs.extend(himalaya_ai_dataset_specs())
+    external_specs.extend(aya_nepali_dataset_specs())
+    external_specs.extend(iriis_nepali_text_corpus_specs())
+    external_specs.extend(kaggle_dataset_specs())
+    catalog_specs = [*pipeline_specs, *external_specs]
+
     spec: DatasetSpec | None = None
     if use_custom:
         custom_path_text = source_settings.text_input("Parquet file or directory")
@@ -155,12 +165,6 @@ def run_app() -> None:
         if source_area == SYNTHETIC_DATA_AREA:
             spec = render_synthetic_dataset_card(st, key="explorer-synthetic")
         else:
-            pipeline_specs = discover_datasets(data_root)
-            external_specs = []
-            external_specs.extend(himalaya_ai_dataset_specs())
-            external_specs.extend(aya_nepali_dataset_specs())
-            external_specs.extend(iriis_nepali_text_corpus_specs())
-            external_specs.extend(kaggle_dataset_specs())
             if not pipeline_specs and not external_specs:
                 st.warning(f"No supported datasets found under `{data_root}`.")
                 st.stop()
@@ -173,7 +177,7 @@ def run_app() -> None:
             )
             # Prefer an available local stage by default; remote datasets can
             # otherwise trigger a network request as soon as the app starts.
-            all_specs = [*pipeline_specs, *external_specs]
+            all_specs = catalog_specs
             provider_options = list(
                 dict.fromkeys(
                     (
@@ -371,11 +375,51 @@ def run_app() -> None:
             "Sampling is limited to columns shared by every shard."
         )
 
-    workspace_tab, sample_tab, inference_tab, metadata_tab = st.tabs(
-        ["WORKSPACE", "Source sample", "Inference", "Metadata"]
+    overlap_specs = list(
+        {
+            item.key: item
+            for item in (spec, *catalog_specs)
+            if item.format != "kaggle_text"
+        }.values()
+    )
+
+    def inventory_for_spec(selected_spec: DatasetSpec) -> dict[str, Any]:
+        if selected_spec.key == spec.key:
+            return inventory
+        if selected_spec.format == "huggingface":
+            selected_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+            return cached_huggingface_inventory(
+                selected_spec.dataset_id or "",
+                selected_spec.dataset_config,
+                selected_spec.dataset_split or "train",
+                selected_spec.filter_column,
+                selected_spec.filter_value,
+                secret_fingerprint(selected_hf_token),
+                selected_hf_token,
+            )
+        if selected_spec.format == "kaggle":
+            return cached_kaggle_inventory(
+                selected_spec.dataset_id or "", selected_spec.dataset_file or ""
+            )
+        signatures = file_signatures(selected_spec.files)
+        return project_inventory(
+            cached_inventory(signatures), selected_spec.visible_columns
+        )
+
+    workspace_tab, overlap_tab, sample_tab, inference_tab, metadata_tab = st.tabs(
+        ["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]
     )
     with workspace_tab:
         render_workspace_tab(st=st, inventory=inventory, spec=spec)
+
+    with overlap_tab:
+        render_overlap_tab(
+            st=st,
+            specs=overlap_specs,
+            current_spec=spec,
+            inventory_for_spec=inventory_for_spec,
+            cached_sample=cached_sample,
+        )
 
     with sample_tab:
         render_sample_tab(
