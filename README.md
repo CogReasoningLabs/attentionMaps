@@ -36,8 +36,9 @@ supervised finetuning are documented in
 ### 1. Dataset exploration application — active
 
 Use this first to select local or remote data, verify a bounded source sample,
-run the gated cleaning pipeline, and perform EDA only on its preprocessed
-output. Synthetic pipeline artifacts remain separate from the corpus catalog.
+run the gated cleaning pipeline, perform EDA only on its preprocessed output,
+and compare sampled duplicate overlap across catalog datasets. Synthetic
+pipeline artifacts remain separate from the corpus catalog.
 
 ```bash
 .venv/bin/python scripts/run_dataset_explorer.py
@@ -283,15 +284,18 @@ HimalayaGPT's serialized tokenizer requires `tiktoken`. The app disables
 Streamlit's source watcher because its inspection of Transformers can otherwise
 import optional `torchvision` modules in this text-only application.
 
-The app is intentionally limited to four tabs: **WORKSPACE**, **Source sample**,
-**Inference**, and **Metadata**. WORKSPACE enforces Sampling → NFC normalization → multi-stage
-deduplication → EDA. EDA is unavailable until preprocessing succeeds and shows
-only the fixed corpus-profile, document-size, text-structure, n-gram, and
-residual-duplicate visualizations plus a fixed-default WordCloud. Source sample is a bounded verification view;
-Inference contains one selector for model comparison, local base-vs-finetuned,
-translation evaluation, or decoder benchmarks. Metadata contains schema and
-manifest evidence. Use the custom-path option for a Parquet file or directory
-elsewhere.
+The app is intentionally limited to five tabs: **WORKSPACE**, **Dataset
+overlap**, **Source sample**, **Inference**, and **Metadata**. WORKSPACE enforces
+Sampling → NFC normalization → multi-stage deduplication → EDA. EDA is
+unavailable until preprocessing succeeds and shows only the fixed
+corpus-profile, document-size, text-structure, n-gram, and residual-duplicate
+visualizations plus a fixed-default WordCloud. Dataset overlap is a read-only,
+sampled comparison for within-source duplicate ratios and every directional
+pair among the selected catalog sources; it does not remove rows. Source sample
+is a bounded verification view. Inference contains one selector for model
+comparison, local base-vs-finetuned, translation evaluation, or decoder
+benchmarks. Metadata contains schema and manifest evidence. Use the custom-path
+option for a Parquet file or directory elsewhere.
 
 The dataset dropdown also includes the remote
 `himalaya-ai/nepali-sft-dataset`. Its 3.8 GB training split is never downloaded

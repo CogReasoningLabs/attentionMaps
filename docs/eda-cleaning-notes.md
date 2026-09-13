@@ -7,20 +7,26 @@ datasets. It calculates evidence and writes derived reports, but it does not
 delete, rewrite, or language-filter source rows. A source-specific cleaning
 pipeline is already implemented for the local PDF, news, and lyrics
 pretraining sources. A general cleaning and reviewed near-deduplication
-pipeline for every catalog dataset is still planned.
+pipeline for every catalog dataset is still planned. A separate batched CLI
+now materializes clean Parquet, audit, EDA, PDF, checksum, and ZIP products from
+one local or Drive input tree. The explorer now also has a report-only
+**Dataset overlap** tab for sampled within-dataset duplicate ratios and
+directional cross-dataset containment matrices. Formal logical-dataset
+manifests and persisted cross-source duplicate clusters are still planned.
 
-The same notes are rendered in the Streamlit **EDA & cleaning notes** tab so
-the methodology stays beside the metrics. This Markdown file is the source of
-truth; changes should be made here rather than duplicated in UI code.
+This Markdown file is the version-controlled source of truth for the method;
+changes should be made here rather than duplicated in UI code.
 
 ## Language filtration and preprocessing actually implemented
 
-Three related paths exist, and their outputs must not be confused:
+Four related paths exist, and their outputs must not be confused:
 
 | Path | Changes source text? | Purpose |
 |---|---:|---|
 | Survey EDA | No | Normalize a temporary analysis copy and report quality evidence |
 | Pretraining source cleaner | Writes a new cleaned dataset | Filter and standardize the local PDF, news, and lyrics sources |
+| Batched preprocessing CLI | Writes a new clean corpus | Sample, clean, verified-deduplicate, profile, and package one local/Drive input tree |
+| Dataset overlap explorer | No | Sample selected catalog datasets and report internal duplication plus all directional pair combinations |
 | WordCloud/token display | No | Produce visualization-only Devanagari tokens and stopword-filtered frequencies |
 
 ### Streamlit cleaning WORKSPACE
@@ -34,9 +40,10 @@ The per-dataset `WORKSPACE` tab enforces a gated materialization sequence:
 2. **NFC normalization:** extract only the selected text/provenance fields and
    create a new NFC-normalized workspace document set. The sampled source rows
    are released from session memory after this stage.
-3. **Deduplication layers:** remove normalized exact SHA-256 duplicates, remove
-   MinHash-LSH near-duplicate candidates, then strip normalized paragraphs that
-   recur in the configured number of retained documents.
+3. **Deduplication layers:** remove normalized exact SHA-256 duplicates, use
+   MinHash-LSH to retrieve token-shingle candidates, require exact Jaccard and
+   normalized token edit-similarity verification, then strip normalized
+   paragraphs that recur in the configured number of retained documents.
 4. **Clean-data EDA:** enable EDA only after all three preparation stages have
    completed successfully.
 
@@ -266,9 +273,11 @@ because duplicate indexes grow with the number and length of documents.
 
 ## Existing duplicate screening
 
-The three-stage ordering follows the practical design described in
-[“Why Deduplication Is the Most Underestimated Step in LLM Pretraining”](https://blog.gopenai.com/why-deduplication-is-the-most-underestimated-step-in-llm-pretraining-and-what-it-costs-you-to-get-a8d218f907a8),
-adapted here as bounded, read-only diagnostics rather than automatic deletion.
+The three-stage ordering is informed by Lee et al.,
+[“Deduplicating Training Data Makes Language Models Better”](https://aclanthology.org/2022.acl-long.577/),
+adapted for Nepali-aware tokenization and the current local execution budget.
+Survey EDA remains diagnostic; the separate batch/workspace paths can
+materialize reviewed outputs.
 
 ### Pass 1: exact documents
 
@@ -280,10 +289,14 @@ first digest is retained and later matches increment `exact_duplicate_rows`.
 
 ### Pass 2: near-duplicate documents
 
-Each non-exact document is represented with five-character shingles and a
+Each non-exact document is represented by five-token shingles and a
 128-permutation MinHash signature by default. Sixteen LSH bands retrieve
-candidates, then signature agreement estimates Jaccard similarity. The default
-threshold is `0.80`. Matching later documents increment `near_duplicate_rows`.
+candidates only. A candidate is accepted as a near duplicate only when its
+exact hashed-shingle Jaccard similarity and normalized token edit similarity
+both meet their independently configured thresholds, `0.80` by default.
+Compact 64-bit fingerprints support verification without retaining a second
+full-text copy of every document. Documents shorter than five tokens receive
+exact-document deduplication only.
 
 ### Pass 3: repeated paragraph / boilerplate screening
 
@@ -301,9 +314,10 @@ The displayed duplicate rate is:
 (exact_duplicate_rows + near_duplicate_rows) / usable_rows × 100
 ```
 
-All three Streamlit passes are screening evidence, not automatic deletion.
-MinHash is probabilistic, thresholds require manual calibration, and repeated
-paragraphs require review before materialized removal.
+Survey EDA passes are screening evidence, not automatic deletion. MinHash
+candidate retrieval is probabilistic, thresholds require manual Nepali
+calibration, and repeated paragraphs require review before materialized
+removal.
 Duplicate rates from a partial fold are generally lower bounds on corpus-wide
 duplication because two copies can land in different folds. Full-corpus
 deduplication is required before materializing final training data when the
@@ -353,17 +367,33 @@ ID, source, and reason.
 
 ### 5. Verify near duplicates
 
-Use MinHash-LSH for candidate generation. Before materialized removal, verify
-candidate pairs with interpretable measures such as exact shingle Jaccard,
-length ratio, and optionally normalized edit similarity. Thresholds must be
-tuned on a manually labeled Nepali sample. Avoid blindly merging transitive
-chains where A resembles B and B resembles C but A does not resemble C.
+Use MinHash-LSH only for candidate generation. Exact token-shingle Jaccard and
+banded normalized token edit similarity are now implemented as required
+verification. Thresholds still must be tuned on a manually labeled Nepali
+sample. Avoid blindly merging transitive chains where A resembles B and B
+resembles C but A does not resemble C.
 
 ### 6. Deduplicate in two passes
 
-Run within-dataset deduplication first, followed by cross-dataset comparison.
+The report-only explorer now runs within-dataset deduplication first, followed
+by a single indexed cross-dataset comparison. For source dataset A and covering
+dataset B, document containment is `matched_unique_A / internally_unique_A`.
+The reverse direction uses B's denominator and can differ. Inputs are never
+removed or rewritten by this workflow.
+
 Cross-dataset keeper priority must follow the survey's source quality, license,
 and intended-use policy rather than input iteration order.
+
+For each logical dataset, report duplicates within individual files and across
+its files. Then join verified global duplicate clusters to dataset IDs and
+calculate exact overlap, near overlap, token-weighted overlap, unique
+contribution, and both directional containment values for every dataset pair.
+Directional containment is required because a small dataset can be almost
+entirely contained in a much larger dataset even when symmetric similarity is
+low. The explorer currently implements exact and verified-near document
+matches, both directional containment values, matched-document token mass, CSV
+exports, and a heatmap. Unique-contribution ranking and persistent cluster
+provenance remain planned.
 
 ### 7. Materialize auditable outputs
 
