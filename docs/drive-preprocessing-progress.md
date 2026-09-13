@@ -161,6 +161,22 @@ mode until reviewed.
 - Compare token shingle sizes 3/5/7 and Jaccard/edit thresholds 0.80/0.85/0.90.
 - Benchmark MinHash configurations for candidate recall, runtime, and peak RSS.
 - Review repeated short-pattern behavior and paragraph removal semantics.
+- [ ] Add an optional GPU-based Task2Vec diversity-coefficient study after
+  cleaning and deduplication, following
+  [Miranda et al.](https://arxiv.org/abs/2306.13840):
+  - evaluate and pin a Nepali causal-LM probe and tokenizer revision;
+  - pilot 30 independently sampled task batches, 128 sequences per batch,
+    sequence length 128, 10 LM-head-only epochs, and three sampling seeds;
+  - reset every task batch from the identical frozen probe checkpoint, allowing
+    smaller optimizer microbatches and gradient accumulation for GPU memory;
+  - compare 50, 100, and 200 task batches for coefficient, confidence-interval,
+    ranking, runtime, and peak-VRAM stability;
+  - evaluate the paper-scale setting of 200 task batches with 512 sequences per
+    batch only after the pilot is stable;
+  - validate repeated-text, mixed-domain, and random-noise controls so high
+    variability is not incorrectly reported as high data quality;
+  - cache Task2Vec embeddings and produce per-dataset diversity, symmetric
+    cross-diversity, run-manifest, CSV, and heatmap artifacts for the UI.
 - Measure full-corpus throughput on the selected AWS instance class.
 - Define the dataset manifest, source priorities, license policy, and protected
   evaluation datasets before enabling inter-dataset removal.
