@@ -132,6 +132,8 @@ Project-level documentation:
   survey work log
 - [`docs/eda-cleaning-notes.md`](docs/eda-cleaning-notes.md) — EDA metrics and
   the planned auditable cleaning/deduplication logic shown in the UI
+- [`docs/d2-pruning.md`](docs/d2-pruning.md) — optional post-deduplication D2
+  coreset selection, configuration, artifacts, and evaluation boundaries
 - [`docs/google-drive-workspace.md`](docs/google-drive-workspace.md) — team
   workspace uploads, credentials, resumable transfers, and size buckets
 - [`docs/nepali-pretraining-workflow.md`](docs/nepali-pretraining-workflow.md) —

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from attention_maps.pruning.contracts import D2PruningConfig
+
 
 @dataclass(frozen=True)
 class InputConfig:
@@ -15,6 +17,7 @@ class InputConfig:
     google_drive: str | None = None
     text_columns: tuple[str, ...] = ()
     source_columns: tuple[str, ...] = ()
+    label_column: str | None = None
 
     def __post_init__(self) -> None:
         if (self.local_path is None) == (self.google_drive is None):
@@ -133,6 +136,7 @@ class PipelineConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     cleaning: CleaningConfig = field(default_factory=CleaningConfig)
     deduplication: DeduplicationConfig = field(default_factory=DeduplicationConfig)
+    pruning: D2PruningConfig = field(default_factory=D2PruningConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     eda: EdaConfig = field(default_factory=EdaConfig)
 
@@ -160,6 +164,7 @@ class PipelineConfig:
             google_drive=_optional(input_value.get("google_drive")),
             text_columns=tuple(map(str, input_value.get("text_columns", ()))),
             source_columns=tuple(map(str, input_value.get("source_columns", ()))),
+            label_column=_optional(input_value.get("label_column")),
         )
         return cls(
             run_name=str(value["run_name"]),
@@ -171,6 +176,9 @@ class PipelineConfig:
             sampling=SamplingConfig(**dict(value.get("sampling", {}))),
             cleaning=CleaningConfig(**dict(value.get("cleaning", {}))),
             deduplication=DeduplicationConfig(**dict(value.get("deduplication", {}))),
+            pruning=D2PruningConfig.from_dict(
+                dict(value.get("pruning", {})), base_dir=base_dir
+            ),
             execution=ExecutionConfig(**dict(value.get("execution", {}))),
             eda=EdaConfig(**dict(value.get("eda", {}))),
         )

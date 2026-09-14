@@ -6,6 +6,8 @@ input:
   google_drive: "https://drive.google.com/drive/folders/REPLACE_WITH_SOURCE_ID"
   text_columns: [text]
   source_columns: [source]
+  # Set for supervised, label-balanced D2 runs.
+  label_column: null
 
 destination_drive_folder_id: "REPLACE_WITH_DESTINATION_FOLDER_ID"
 
@@ -27,6 +29,31 @@ deduplication:
   edit_similarity_threshold: 0.80
   boilerplate_min_documents: 3
   boilerplate_min_characters: 40
+
+# D2 is an optional model-aware selection stage after deduplication. The full
+# clean-data shards are always retained. Pin embedding_revision to a commit for
+# research runs; "main" is suitable only while exploring the configuration.
+pruning:
+  enabled: false
+  retention_fraction: 0.50
+  n_neighbors: 10
+  gamma_forward: 1.0
+  gamma_reverse: 0.8
+  graph_backend: auto
+  exact_block_size: 1024
+  max_exact_records: 10000
+  label_balanced: false
+  embedding_model_id: FacebookAI/xlm-roberta-base
+  embedding_revision: main
+  embedding_pooling: cls
+  embedding_batch_size: 32
+  embedding_max_length: 256
+  embedding_device: auto
+  normalize_embeddings: false
+  local_files_only: false
+  embeddings_path: null
+  difficulty_mode: uniform
+  difficulty_scores_path: null
 
 execution:
   batch_size: 512
