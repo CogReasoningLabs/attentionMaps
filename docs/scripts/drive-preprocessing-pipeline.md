@@ -11,6 +11,7 @@ Google Drive or local path
   → exact or MinHash-LSH document deduplication
   → repeated-paragraph removal
   → clean Parquet shards
+  → optional D2 coreset selection
   → 1/2/3/4-gram tables, WordCloud, figures, and PDF
   → checksums and Zip64 package
   → optional Google Drive upload
@@ -56,6 +57,11 @@ deduplication only.
 The coordinator makes deduplication decisions in source order even when worker
 batches complete at different times. This keeps one-worker and multi-worker runs
 equivalent.
+
+D2 pruning is disabled by default. When enabled, it runs only after the full
+clean dataset has been materialized and produces a separate coreset. See the
+[D2 pruning reference](../d2-pruning.md) for equations, model/difficulty inputs,
+resource limits, configuration, and artifacts.
 
 ## Run locally
 
@@ -109,10 +115,10 @@ immutable: rerunning it is rejected. If a run has a `running` manifest, rerunnin
 keeps downloaded input and `.part` files but rebuilds generated preprocessing,
 EDA, and package stages.
 
-The final package contains clean Parquet shards, the preprocessing audit, EDA
-JSON/CSV/PNG products, a PDF report, `run_manifest.json`, and
-`checksums.sha256`. The uploader sends the ZIP, ZIP checksum, and manifest to a
-new folder under the configured destination.
+The final package contains clean Parquet shards, the preprocessing audit,
+optional D2 coreset and score artifacts, EDA JSON/CSV/PNG products, a PDF
+report, `run_manifest.json`, and `checksums.sha256`. The uploader sends the ZIP,
+ZIP checksum, and manifest to a new folder under the configured destination.
 
 ## Standalone Drive transfer check
 

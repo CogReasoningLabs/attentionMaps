@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the batched local/Google-Drive clean corpus and EDA pipeline."""
+"""Run batched cleaning, optional D2 pruning, EDA, and packaging."""
 
 from __future__ import annotations
 
@@ -63,6 +63,8 @@ def main(arguments: Iterable[str] | None = None) -> int:
         print(f"Pipeline failed: {error}", file=sys.stderr)
         return 1
     print(f"Clean documents: {result.clean_documents:,}")
+    if result.d2_documents is not None:
+        print(f"D2 coreset documents: {result.d2_documents:,}")
     print(f"Package: {result.package_path}")
     print(f"Manifest: {result.manifest_path}")
     if result.upload:

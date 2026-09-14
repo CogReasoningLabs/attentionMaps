@@ -1,8 +1,11 @@
+import hashlib
 import json
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+
+import numpy as np
 
 from attention_maps.batch_pipeline.contracts import (
     DeduplicationConfig,
@@ -14,9 +17,83 @@ from attention_maps.batch_pipeline.contracts import (
 from attention_maps.batch_pipeline.processing import selected_by_sampling
 from attention_maps.batch_pipeline.processing import iter_parquet_records
 from attention_maps.batch_pipeline.runner import run_pipeline
+from attention_maps.pruning import D2PruningConfig
 
 
 class BatchPreprocessingPipelineTests(unittest.TestCase):
+    def test_optional_d2_stage_preserves_clean_data_and_packages_coreset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.jsonl"
+            rows = [
+                {"text": "पहिलो नेपाली दस्तावेज", "label": "positive"},
+                {"text": "दोस्रो नेपाली दस्तावेज", "label": "positive"},
+                {"text": "तेस्रो नेपाली दस्तावेज", "label": "negative"},
+                {"text": "चौथो नेपाली दस्तावेज", "label": "negative"},
+            ]
+            source.write_text(
+                "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            doc_ids = np.array(
+                [
+                    hashlib.sha256(f"source.jsonl:{index}".encode()).hexdigest()
+                    for index in range(len(rows))
+                ]
+            )
+            embeddings_path = root / "embeddings.npz"
+            np.savez(
+                embeddings_path,
+                embeddings=np.array([[0.0], [0.2], [5.0], [5.2]], dtype=np.float32),
+                doc_ids=doc_ids,
+            )
+            config = PipelineConfig(
+                run_name="d2-run",
+                input=InputConfig(
+                    local_path=source,
+                    text_columns=("text",),
+                    label_column="label",
+                ),
+                output_root=root / "runs",
+                deduplication=DeduplicationConfig(mode="exact"),
+                pruning=D2PruningConfig(
+                    enabled=True,
+                    retention_fraction=0.5,
+                    n_neighbors=1,
+                    graph_backend="exact",
+                    label_balanced=True,
+                    embeddings_path=embeddings_path,
+                ),
+                execution=ExecutionConfig(batch_size=2, workers=1, shard_rows=2),
+                eda=EdaConfig(enabled=False),
+            )
+
+            result = run_pipeline(config)
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            clean = list(
+                iter_parquet_records(
+                    sorted((result.run_dir / "output/clean-data").glob("*.parquet")),
+                    10,
+                )
+            )
+            coreset = list(
+                iter_parquet_records(
+                    sorted((result.run_dir / "output/d2/coreset").glob("*.parquet")),
+                    10,
+                )
+            )
+            with zipfile.ZipFile(result.package_path) as bundle:
+                members = set(bundle.namelist())
+
+        self.assertEqual(result.clean_documents, 4)
+        self.assertEqual(result.d2_documents, 2)
+        self.assertEqual(len(clean), 4)
+        self.assertEqual(len(coreset), 2)
+        self.assertEqual({row["label"] for row in coreset}, {"positive", "negative"})
+        self.assertEqual(manifest["pruning"]["selected_documents"], 2)
+        self.assertIn("d2/d2_manifest.json", members)
+        self.assertTrue(any(name.startswith("d2/coreset/part-") for name in members))
+
     def test_local_pipeline_batches_deduplicates_reports_and_packages(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

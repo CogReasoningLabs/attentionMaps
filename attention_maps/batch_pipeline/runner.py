@@ -28,6 +28,10 @@ from attention_maps.eda.deduplication import (
 from attention_maps.eda.pipeline import analyze_records
 from attention_maps.eda.reporting import write_survey_report
 from attention_maps.eda.text import devanagari_ratio, tokenize
+from attention_maps.pruning.pipeline import (
+    D2PipelineResult,
+    run_d2_pruning_on_parquet,
+)
 
 from .artifacts import (
     artifact_inventory,
@@ -72,6 +76,7 @@ class PipelineResult:
     package_path: Path
     manifest_path: Path
     upload: DriveUploadSummary | None = None
+    d2_documents: int | None = None
 
 
 def run_pipeline(
@@ -217,8 +222,23 @@ def run_pipeline(
     clean_documents = sum(1 for _ in iter_parquet_records(clean_paths, config.execution.batch_size))
     if not clean_documents:
         raise RuntimeError("Preprocessing retained zero documents; relax cleaning settings.")
+    d2_result: D2PipelineResult | None = None
+    if config.pruning.enabled:
+        _progress(progress, "d2_pruning", 0, clean_documents)
+        d2_result = run_d2_pruning_on_parquet(
+            clean_paths,
+            clean_documents,
+            output_dir / "d2",
+            config.pruning,
+            shard_rows=config.execution.shard_rows,
+            batch_size=config.execution.batch_size,
+            progress=lambda stage, value, total: _progress(
+                progress, f"d2_{stage}", value, total
+            ),
+        )
     _progress(progress, "eda", 0, clean_documents)
     profile = None
+    d2_profile = None
     eda_written: Sequence[Path] = ()
     if config.eda.enabled:
         dataset_key = _safe_key(config.run_name)
@@ -257,7 +277,34 @@ def run_pipeline(
                 progress, "eda", value, clean_documents
             ),
         )
-        survey = SurveyRun(SurveyPlan("Clean batch pipeline EDA", (spec,), analysis), (profile,), {})
+        survey_specs = [spec]
+        survey_profiles = [profile]
+        if d2_result is not None:
+            d2_spec = DatasetSpec(
+                key=f"{dataset_key}-d2-coreset",
+                dataset_id=f"local/{dataset_key}/d2",
+                text_columns=("text",),
+                source_columns=("source",),
+                sample_size=d2_result.selected_documents,
+                population_rows=d2_result.selected_documents,
+            )
+            d2_profile = analyze_records(
+                d2_spec,
+                iter_parquet_records(
+                    d2_result.coreset_paths, config.execution.batch_size
+                ),
+                replace(analysis, sample_size=d2_result.selected_documents),
+                progress=lambda _dataset, _stage, value: _progress(
+                    progress, "d2_eda", value, d2_result.selected_documents
+                ),
+            )
+            survey_specs.append(d2_spec)
+            survey_profiles.append(d2_profile)
+        survey = SurveyRun(
+            SurveyPlan("Clean batch pipeline EDA", tuple(survey_specs), analysis),
+            tuple(survey_profiles),
+            {},
+        )
         eda_written = write_survey_report(survey, output_dir / "eda", plots=True)
 
     report_summary = {
@@ -265,6 +312,9 @@ def run_pipeline(
         "Input records scanned": counters["scanned"],
         "Records sampled": counters["sampled"],
         "Clean documents": clean_documents,
+        "D2 coreset documents": (
+            d2_result.selected_documents if d2_result is not None else "disabled"
+        ),
         "Exact duplicates removed": counters["exact_duplicates"],
         "Near duplicates removed": counters["near_duplicates"],
         "Boilerplate paragraphs removed": counters["boilerplate_paragraphs_removed"],
@@ -295,7 +345,18 @@ def run_pipeline(
             "mode": config.deduplication.mode,
             "repeated_paragraph_patterns": len(repeated_hashes),
         },
+        "pruning": (
+            {
+                "method": "D2 Pruning",
+                "selected_documents": d2_result.selected_documents,
+                "manifest": str(d2_result.manifest_path.relative_to(output_dir)),
+                "scores": str(d2_result.scores_path.relative_to(output_dir)),
+            }
+            if d2_result is not None
+            else {"enabled": False}
+        ),
         "eda_summary": profile.summary.as_dict() if profile else None,
+        "d2_eda_summary": d2_profile.summary.as_dict() if d2_profile else None,
         "runtime": runtime_metadata(),
         "report": str(pdf_path.relative_to(output_dir)),
     }
@@ -341,7 +402,16 @@ def run_pipeline(
         )
     _progress(progress, "complete", clean_documents, clean_documents)
     LOGGER.info("PIPELINE COMPLETE run=%s clean_documents=%d", config.run_name, clean_documents)
-    return PipelineResult(run_dir, clean_documents, package_path, manifest_path, upload)
+    return PipelineResult(
+        run_dir=run_dir,
+        clean_documents=clean_documents,
+        package_path=package_path,
+        manifest_path=manifest_path,
+        upload=upload,
+        d2_documents=(
+            d2_result.selected_documents if d2_result is not None else None
+        ),
+    )
 
 
 def _sampled_batches(

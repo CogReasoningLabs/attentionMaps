@@ -33,6 +33,7 @@ class PreparedRecord:
     token_count: int
     character_count: int
     devanagari_ratio: float
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,11 @@ def prepare_batch(
             rejected.append(_rejection(row, "cleaning", "below_devanagari_ratio"))
             continue
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        label_value = (
+            row.record.get(input_config.label_column)
+            if input_config.label_column
+            else None
+        )
         records.append(
             PreparedRecord(
                 doc_id=hashlib.sha256(row.row_id.encode("utf-8")).hexdigest(),
@@ -95,6 +101,7 @@ def prepare_batch(
                 token_count=len(tokens),
                 character_count=len(normalized),
                 devanagari_ratio=round(ratio, 8),
+                label=str(label_value).strip() if label_value is not None else "",
             )
         )
     return PreparedBatch(batch_id, tuple(records), tuple(rejected))
@@ -178,6 +185,7 @@ class ParquetShardWriter:
                     ("token_count", pa.int64()),
                     ("character_count", pa.int64()),
                     ("devanagari_ratio", pa.float64()),
+                    ("label", pa.string()),
                 ]
             )
             self.writer = pq.ParquetWriter(
@@ -241,7 +249,18 @@ def iter_parquet_records(paths: Iterable[Path], batch_size: int) -> Iterator[dic
 
 
 def prepared_from_mapping(value: dict) -> PreparedRecord:
-    return PreparedRecord(**{key: value[key] for key in PreparedRecord.__dataclass_fields__})
+    return PreparedRecord(
+        doc_id=value["doc_id"],
+        text=value["text"],
+        source=value["source"],
+        source_file=value["source_file"],
+        source_row=value["source_row"],
+        text_sha256=value["text_sha256"],
+        token_count=value["token_count"],
+        character_count=value["character_count"],
+        devanagari_ratio=value["devanagari_ratio"],
+        label=str(value.get("label") or ""),
+    )
 
 
 def _rejection(row: SourceRecord, stage: str, reason: str) -> RejectedRecord:

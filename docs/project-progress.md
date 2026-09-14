@@ -78,7 +78,7 @@ base checkpoint passes a fixed Nepali evaluation set.
 | Dataset building | Deterministic source sampling, exact-text deduplication, and document-level train/validation/test splitting |
 | Dataset explorer | Provider/lineage and purpose taxonomy, dependent filters, local/remote inspection, complete-record views, bounded EDA, tokenizer/model comparison, and evaluation tabs |
 | Survey EDA | Incremental size/script/quality/provenance metrics, exact and approximate duplicate screening, n-grams, co-occurrence networks, evidence exports, and in-app methodology notes |
-| Batched corpus materialization | Local/Drive ingestion, deterministic sampling, bounded process workers, clean Parquet shards, verified exact/near deduplication, paragraph removal, EDA/PDF generation, checksums, Zip64 packaging, and optional Drive upload |
+| Batched corpus materialization | Local/Drive ingestion, deterministic sampling, bounded process workers, clean Parquet shards, verified exact/near deduplication, paragraph removal, optional D2 coreset selection, EDA/PDF generation, checksums, Zip64 packaging, and optional Drive upload |
 | Drive transfer diagnostics | Standalone recursive download/upload timing, native Google file export, resumable chunks, and JSON throughput evidence |
 | Synthetic generation | Registry-driven family/variant selection shared by both apps, live bounded generation, rate accounting, run persistence, and JSONL/CSV exports |
 | Tokenization | Tried an available third-party Hugging Face BPE tokenizer; also retained a separate custom-BPE experiment path |
@@ -157,8 +157,10 @@ documentation, and notebooks. These local products are excluded by
 The current phase is dataset research and auditable corpus materialization.
 Survey results remain diagnostic and bounded unless the UI reports full
 population coverage. The new batch pipeline writes clean, immutable outputs
-without rewriting source datasets. It currently treats an input tree as one
-corpus. A new report-only explorer tab performs sampled within-dataset
+without rewriting source datasets. Its optional D2 stage creates a separate,
+audited coreset from the full post-deduplication corpus; it does not classify
+excluded records as bad data. The pipeline currently treats an input tree as
+one corpus. A new report-only explorer tab performs sampled within-dataset
 deduplication and indexed directional inter-dataset containment for two or more
 catalog datasets without removing rows. A formal source manifest and persisted
 cross-source cluster data remain the next data-contract changes. Synthetic
@@ -189,14 +191,17 @@ The next implementation sequence is:
 2. validate the new sampled within-dataset and directional inter-dataset
    overlap metrics, then approve quality, provenance, license, keeper, and
    threshold policies before persisting clusters or enabling removal;
-3. expand the synthetic-family registry only for reviewed pipeline contracts
+3. validate D2 on the Nepali movie-review classification dataset against full,
+   random, and difficulty-only baselines before using its pure-text adaptation
+   for pretraining or instruction-tuning corpora;
+4. expand the synthetic-family registry only for reviewed pipeline contracts
    and freeze generated dataset versions with complete lineage;
-4. establish fixed Nepali evaluation sets and use them to choose a base model
+5. establish fixed Nepali evaluation sets and use them to choose a base model
    and decide whether continual pretraining is needed before SFT;
-5. train comparable checkpoints against frozen data/tokenizer versions;
-6. validate attention extraction across layers, heads, prompts, and generation
+6. train comparable checkpoints against frozen data/tokenizer versions;
+7. validate attention extraction across layers, heads, prompts, and generation
    steps before building the interactive attention visualization application;
-7. add preference schemas and alignment only after SFT contracts, evaluation,
+8. add preference schemas and alignment only after SFT contracts, evaluation,
    and checkpoint lineage are stable.
 
 Reward modeling, RLHF, and a complete attention research application remain
