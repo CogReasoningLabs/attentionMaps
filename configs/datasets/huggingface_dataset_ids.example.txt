@@ -1,0 +1,10 @@
+# One Hugging Face dataset per line. Blank lines and comments are ignored.
+himalaya-ai/nepali-news-corpus
+himalaya-ai/nepali_pdf_corpus
+
+# Optional configuration and split: dataset_id|config|split
+uonlp/CulturaX|ne|train
+
+# Dataset and Dataset Viewer URLs are also accepted.
+https://huggingface.co/datasets/himalaya-ai/nepali-news-corpus
+https://huggingface.co/datasets/uonlp/CulturaX/viewer/ne/train
