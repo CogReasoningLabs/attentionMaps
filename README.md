@@ -38,7 +38,10 @@ supervised finetuning are documented in
 Use this first to select local or remote data, verify a bounded source sample,
 run the gated cleaning pipeline, perform EDA only on its preprocessed output,
 and compare sampled duplicate overlap across catalog datasets. Synthetic
-pipeline artifacts remain separate from the corpus catalog.
+pipeline artifacts remain separate from the corpus catalog. Remote datasets can
+be registered on demand by Hugging Face ID, Kaggle handle, Drive ID/URL, or an
+exact S3 object URI; see
+[identifier-driven dataset ingestion](docs/dataset-source-ingestion.md).
 
 ```bash
 .venv/bin/python scripts/run_dataset_explorer.py
@@ -298,8 +301,10 @@ sampled comparison for within-source duplicate ratios and every directional
 pair among the selected catalog sources; it does not remove rows. Source sample
 is a bounded verification view. Inference contains one selector for model
 comparison, local base-vs-finetuned, translation evaluation, or decoder
-benchmarks. Metadata contains schema and manifest evidence. Use the custom-path
-option for a Parquet file or directory elsewhere.
+benchmarks. Metadata contains schema and manifest evidence. The sidebar accepts
+Hugging Face, Kaggle, Google Drive, S3, and local sources. Use the custom-path
+option for a local Parquet directory or one Parquet, JSON, JSONL, CSV, TXT, or
+XLSX file. Provider credentials are read from `.env`, never from UI fields.
 
 The dataset dropdown also includes the remote
 `himalaya-ai/nepali-sft-dataset`. Its 3.8 GB training split is never downloaded

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import csv
 import json
 import os
 import random
@@ -11,8 +12,10 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from attention_maps.datasets.kaggle import (
+    inspect_workbook_path,
     sample_kaggle_text_rows,
     sample_kaggle_workbook_rows,
+    sample_workbook_rows,
 )
 
 from .catalog import VIEWER_PREFIX
@@ -179,7 +182,129 @@ def inspect_dataset(
         return inspect_parquet(signatures)
     if suffixes == {".json"}:
         return inspect_json(signatures)
+    if suffixes == {".csv"}:
+        return inspect_delimited(signatures, format_name="csv")
+    if suffixes <= {".jsonl", ".ndjson"} and suffixes:
+        return inspect_json_lines(signatures)
+    if suffixes == {".txt"}:
+        return inspect_text_lines(signatures)
+    if suffixes == {".xlsx"} and len(signatures) == 1:
+        return inspect_workbook_path(Path(signatures[0][0]))
     raise ValueError(f"Unsupported or mixed dataset formats: {sorted(suffixes)}")
+
+
+def _merge_observed_schema(
+    records: Sequence[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, str]]]:
+    columns = list(dict.fromkeys(key for record in records for key in record))
+    schema = []
+    for column in columns:
+        types = {
+            _json_value_type(record.get(column))
+            for record in records
+            if record.get(column) is not None
+        }
+        schema.append(
+            {
+                "column": column,
+                "type": " | ".join(sorted(types)) if types else "null",
+                "nullable": str(any(record.get(column) is None for record in records)),
+            }
+        )
+    return columns, schema
+
+
+def inspect_delimited(
+    signatures: tuple[tuple[str, int, int], ...], *, format_name: str = "csv"
+) -> dict[str, Any]:
+    """Scan CSV metadata with bounded schema inference memory."""
+
+    if len(signatures) != 1:
+        raise ValueError("CSV explorer imports must select exactly one file")
+    path_text, size, _ = signatures[0]
+    examples: list[dict[str, Any]] = []
+    with Path(path_text).open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        columns = list(reader.fieldnames or [])
+        rows = 0
+        nullable = {column: False for column in columns}
+        for record in reader:
+            rows += 1
+            if len(examples) < 1_000:
+                examples.append(dict(record))
+            for column in columns:
+                if record.get(column) in (None, ""):
+                    nullable[column] = True
+    return {
+        "format": format_name,
+        "path": path_text,
+        "rows": rows,
+        "files": 1,
+        "bytes": size,
+        "row_groups": [],
+        "columns": columns,
+        "schema": [
+            {"column": column, "type": "string", "nullable": str(nullable[column])}
+            for column in columns
+        ],
+        "schema_variants": 1,
+    }
+
+
+def inspect_json_lines(
+    signatures: tuple[tuple[str, int, int], ...],
+) -> dict[str, Any]:
+    """Scan JSONL/NDJSON metadata without retaining the corpus."""
+
+    if len(signatures) != 1:
+        raise ValueError("JSONL explorer imports must select exactly one file")
+    path_text, size, _ = signatures[0]
+    examples: list[dict[str, Any]] = []
+    rows = 0
+    with Path(path_text).open("r", encoding="utf-8-sig") as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            record = dict(value) if isinstance(value, dict) else {"text": value}
+            rows += 1
+            if len(examples) < 1_000:
+                examples.append(record)
+    columns, schema = _merge_observed_schema(examples)
+    return {
+        "format": "jsonl",
+        "path": path_text,
+        "rows": rows,
+        "files": 1,
+        "bytes": size,
+        "row_groups": [],
+        "columns": columns,
+        "schema": schema,
+        "schema_variants": 1,
+    }
+
+
+def inspect_text_lines(
+    signatures: tuple[tuple[str, int, int], ...],
+) -> dict[str, Any]:
+    """Count non-empty UTF-8 lines as individual text records."""
+
+    if len(signatures) != 1:
+        raise ValueError("Text explorer imports must select exactly one file")
+    path_text, size, _ = signatures[0]
+    with Path(path_text).open("rb") as stream:
+        rows = sum(1 for line in stream if line.strip())
+    return {
+        "format": "text",
+        "path": path_text,
+        "rows": rows,
+        "files": 1,
+        "bytes": size,
+        "row_groups": [],
+        "columns": ["text"],
+        "schema": [{"column": "text", "type": "string", "nullable": "False"}],
+        "schema_variants": 1,
+    }
 
 
 def inspect_huggingface_dataset(
@@ -187,6 +312,7 @@ def inspect_huggingface_dataset(
     split: str,
     *,
     config: str | None = None,
+    revision: str | None = None,
     token: str | None = None,
     filter_column: str | None = None,
     filter_value: str | None = None,
@@ -210,6 +336,7 @@ def inspect_huggingface_dataset(
             config,
             split=split,
             streaming=True,
+            revision=revision,
             token=token or None,
             **load_options,
         )
@@ -238,6 +365,7 @@ def inspect_huggingface_dataset(
         "dataset_id": dataset_id,
         "dataset_config": config,
         "dataset_split": split,
+        "dataset_revision": revision,
         "rows": int(split_info.num_examples),
         "files": shard_count,
         # Prefer physical/download bytes for storage displays. SplitInfo's
@@ -327,7 +455,9 @@ def sample_parquet_rows(
         for global_index, local_index in positions:
             record = table.slice(local_index, 1).to_pylist()[0]
             record[f"{VIEWER_PREFIX}row_index"] = global_index
-            record[f"{VIEWER_PREFIX}file"] = path_text
+            record[f"{VIEWER_PREFIX}file"] = str(
+                inventory.get("source_uri") or path_text
+            )
             record[f"{VIEWER_PREFIX}row_group"] = group_index
             sampled_by_index[global_index] = record
 
@@ -355,9 +485,126 @@ def sample_json_rows(
     for index in indices:
         record = {column: records[index].get(column) for column in selected_columns}
         record[f"{VIEWER_PREFIX}row_index"] = index
-        record[f"{VIEWER_PREFIX}file"] = inventory["path"]
+        record[f"{VIEWER_PREFIX}file"] = str(
+            inventory.get("source_uri") or inventory["path"]
+        )
         sampled.append(record)
     return sampled
+
+
+def _reservoir_records(
+    records: Any,
+    *,
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+    source_uri: str,
+) -> list[dict[str, Any]]:
+    """Uniformly sample a one-pass record iterator with bounded memory."""
+
+    rng = random.Random(seed)
+    reservoir: list[tuple[int, dict[str, Any]]] = []
+    for index, source_record in enumerate(records):
+        record = {column: source_record.get(column) for column in columns}
+        record[f"{VIEWER_PREFIX}row_index"] = index
+        record[f"{VIEWER_PREFIX}file"] = source_uri
+        if len(reservoir) < sample_size:
+            reservoir.append((index, record))
+            continue
+        replacement = rng.randrange(index + 1)
+        if replacement < sample_size:
+            reservoir[replacement] = (index, record)
+    reservoir.sort(key=lambda item: item[0])
+    return [record for _, record in reservoir]
+
+
+def sample_csv_rows(
+    inventory: dict[str, Any],
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Uniformly reservoir-sample a CSV file."""
+
+    selected = list(columns)
+    invalid = set(selected) - set(inventory["columns"])
+    if invalid:
+        raise ValueError(f"Unknown CSV columns: {sorted(invalid)}")
+    if sample_size <= 0:
+        return []
+    path = Path(inventory["path"])
+    with path.open("r", encoding="utf-8-sig", newline="") as stream:
+        return _reservoir_records(
+            csv.DictReader(stream),
+            sample_size=sample_size,
+            seed=seed,
+            columns=selected,
+            source_uri=str(inventory.get("source_uri") or path),
+        )
+
+
+def sample_json_lines_rows(
+    inventory: dict[str, Any],
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Uniformly reservoir-sample a JSONL/NDJSON file."""
+
+    selected = list(columns)
+    invalid = set(selected) - set(inventory["columns"])
+    if invalid:
+        raise ValueError(f"Unknown JSONL columns: {sorted(invalid)}")
+    if sample_size <= 0:
+        return []
+    path = Path(inventory["path"])
+
+    def records() -> Any:
+        with path.open("r", encoding="utf-8-sig") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                value = json.loads(line)
+                yield dict(value) if isinstance(value, dict) else {"text": value}
+
+    return _reservoir_records(
+        records(),
+        sample_size=sample_size,
+        seed=seed,
+        columns=selected,
+        source_uri=str(inventory.get("source_uri") or path),
+    )
+
+
+def sample_text_line_rows(
+    inventory: dict[str, Any],
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Uniformly reservoir-sample non-empty text lines."""
+
+    invalid = set(columns) - {"text"}
+    if invalid:
+        raise ValueError(f"Unknown text columns: {sorted(invalid)}")
+    if sample_size <= 0:
+        return []
+    path = Path(inventory["path"])
+
+    def records() -> Any:
+        with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
+            for line in stream:
+                text = line.strip()
+                if text:
+                    yield {"text": text}
+
+    return _reservoir_records(
+        records(),
+        sample_size=sample_size,
+        seed=seed,
+        columns=list(columns),
+        source_uri=str(inventory.get("source_uri") or path),
+    )
 
 
 def sample_huggingface_rows(
@@ -386,6 +633,7 @@ def sample_huggingface_rows(
                 inventory.get("dataset_config"),
                 split=inventory["dataset_split"],
                 streaming=True,
+                revision=inventory.get("dataset_revision"),
                 token=token or None,
                 filters=[
                     (
@@ -433,6 +681,7 @@ def sample_huggingface_rows(
             inventory.get("dataset_config"),
             split=inventory["dataset_split"],
             streaming=True,
+            revision=inventory.get("dataset_revision"),
             token=token or None,
         )
         stream = stream.shuffle(
@@ -477,4 +726,18 @@ def sample_dataset_rows(
         return sample_kaggle_text_rows(inventory, sample_size, seed, columns)
     if inventory.get("format") == "json":
         return sample_json_rows(inventory, sample_size, seed, columns)
+    if inventory.get("format") == "csv":
+        return sample_csv_rows(inventory, sample_size, seed, columns)
+    if inventory.get("format") == "jsonl":
+        return sample_json_lines_rows(inventory, sample_size, seed, columns)
+    if inventory.get("format") == "text":
+        return sample_text_line_rows(inventory, sample_size, seed, columns)
+    if inventory.get("format") == "xlsx":
+        return sample_workbook_rows(
+            inventory,
+            sample_size,
+            seed,
+            columns,
+            source_uri=inventory.get("source_uri"),
+        )
     return sample_parquet_rows(inventory, sample_size, seed, columns)

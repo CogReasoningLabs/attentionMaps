@@ -31,6 +31,7 @@ from attention_maps.explorer import (
     ALL_PROVIDERS,
     ALL_PURPOSES,
     DEFAULT_DATA_ROOT,
+    SOURCE_TYPES,
     PIPELINE_STAGE_LABELS,
     PIPELINE_STAGES,
     TRACKED_PROVIDERS,
@@ -40,6 +41,7 @@ from attention_maps.explorer import (
     custom_dataset,
     dataset_size_bucket,
     discover_datasets,
+    discover_import_files,
     file_signatures,
     filter_dataset_specs,
     format_bytes,
@@ -52,7 +54,13 @@ from attention_maps.explorer import (
     project_inventory,
     sample_dataset_rows,
     secret_fingerprint,
+    stage_google_drive_source,
+    stage_kaggle_source,
+    stage_s3_object,
+    staged_source_spec,
+    huggingface_source_spec,
 )
+from attention_maps.datasets.schemas import STANDARD_TRAINING_SCHEMAS
 from apps.explorer_tabs import (
     render_details_tab,
     render_inference_hub,
@@ -63,6 +71,191 @@ from apps.explorer_tabs import (
 )
 
 
+def _render_remote_source(st: Any, source_type: str) -> DatasetSpec | None:
+    """Render identifier-driven source controls and return a registered source."""
+
+    schema = st.sidebar.selectbox(
+        "Standard dataset schema",
+        STANDARD_TRAINING_SCHEMAS,
+        format_func=lambda item: item.label,
+        key=f"source-schema:{source_type}",
+        help="Controls atomic records and whether supervised D2 is available.",
+    ).key
+    state_key = f"registered-source:{source_type}"
+
+    if source_type == "Hugging Face":
+        st.sidebar.caption(
+            "Loading strategy: inspect metadata and stream a bounded sample; the "
+            "complete split is not downloaded."
+        )
+        dataset_id = st.sidebar.text_input(
+            "Hugging Face dataset ID",
+            placeholder="owner/dataset",
+            key="source-hf-id",
+        )
+        config = st.sidebar.text_input(
+            "Dataset configuration (optional)", key="source-hf-config"
+        )
+        split = st.sidebar.text_input(
+            "Dataset split", value="train", key="source-hf-split"
+        )
+        revision = st.sidebar.text_input(
+            "Revision (recommended)",
+            placeholder="commit, tag, or branch",
+            key="source-hf-revision",
+        )
+        signature = (dataset_id.strip(), config.strip(), split.strip(), revision.strip(), schema)
+        if st.sidebar.button("Load Hugging Face source", type="primary"):
+            try:
+                spec = huggingface_source_spec(
+                    dataset_id,
+                    schema=schema,
+                    config=config,
+                    split=split,
+                    revision=revision,
+                )
+            except ValueError as error:
+                st.sidebar.error(str(error))
+            else:
+                st.session_state[state_key] = {"signature": signature, "spec": spec}
+        saved = st.session_state.get(state_key, {})
+        return saved.get("spec") if saved.get("signature") == signature else None
+
+    if source_type == "Kaggle":
+        st.sidebar.caption(
+            "Loading strategy: cache only the requested internal path when supplied; "
+            "otherwise cache the dataset and choose a file."
+        )
+        identifier = st.sidebar.text_input(
+            "Kaggle dataset handle",
+            placeholder="owner/dataset",
+            key="source-kaggle-id",
+        )
+        requested_path = st.sidebar.text_input(
+            "File or folder in dataset (optional)",
+            help="Leave blank to cache the dataset and select one supported file.",
+            key="source-kaggle-path",
+        )
+        signature = (identifier.strip(), requested_path.strip(), schema)
+        if st.sidebar.button("Load Kaggle source", type="primary"):
+            try:
+                root = stage_kaggle_source(identifier, requested_path)
+            except ValueError as error:
+                st.sidebar.error(str(error))
+            else:
+                st.session_state[state_key] = {"signature": signature, "root": str(root)}
+        return _staged_spec_from_state(
+            st,
+            state_key=state_key,
+            signature=signature,
+            source_type=source_type,
+            schema=schema,
+            source_prefix=f"kaggle://datasets/{identifier.strip()}",
+        )
+
+    if source_type == "Google Drive":
+        st.sidebar.caption(
+            "Loading strategy: resumably stage the selected file/folder, then sample "
+            "the chosen supported file."
+        )
+        identifier = st.sidebar.text_input(
+            "Drive file/folder ID or URL", key="source-drive-id"
+        )
+        signature = (identifier.strip(), schema)
+        if st.sidebar.button("Load Drive source", type="primary"):
+            try:
+                root = stage_google_drive_source(identifier)
+            except (RuntimeError, ValueError) as error:
+                st.sidebar.error(str(error))
+            else:
+                st.session_state[state_key] = {"signature": signature, "root": str(root)}
+        return _staged_spec_from_state(
+            st,
+            state_key=state_key,
+            signature=signature,
+            source_type=source_type,
+            schema=schema,
+            source_prefix=f"gdrive://{identifier.strip()}",
+        )
+
+    if source_type == "S3":
+        st.sidebar.caption(
+            "Loading strategy: validate and stage one exact object, then sample it "
+            "with the format-specific bounded reader."
+        )
+        uri = st.sidebar.text_input(
+            "S3 object URI",
+            placeholder="s3://bucket/path/dataset.parquet",
+            key="source-s3-uri",
+        )
+        signature = (uri.strip(), schema)
+        if st.sidebar.button("Load S3 object", type="primary"):
+            try:
+                root = stage_s3_object(uri)
+            except ValueError as error:
+                st.sidebar.error(str(error))
+            else:
+                st.session_state[state_key] = {"signature": signature, "root": str(root)}
+        return _staged_spec_from_state(
+            st,
+            state_key=state_key,
+            signature=signature,
+            source_type=source_type,
+            schema=schema,
+            source_prefix=uri.strip(),
+        )
+
+    raise ValueError(f"Unknown source type: {source_type}")
+
+
+def _staged_spec_from_state(
+    st: Any,
+    *,
+    state_key: str,
+    signature: tuple[str, ...],
+    source_type: str,
+    schema: str,
+    source_prefix: str,
+) -> DatasetSpec | None:
+    saved = st.session_state.get(state_key, {})
+    if saved.get("signature") != signature or not saved.get("root"):
+        return None
+    root = Path(saved["root"])
+    try:
+        files = discover_import_files(root)
+    except ValueError as error:
+        st.sidebar.error(str(error))
+        return None
+    if not files:
+        st.sidebar.error(
+            "No supported Parquet, JSON, JSONL, CSV, TXT, or XLSX file was found."
+        )
+        return None
+    selected = st.sidebar.selectbox(
+        "Dataset file",
+        files,
+        format_func=lambda path: str(path.relative_to(root)) if root.is_dir() else path.name,
+        key=f"source-file:{source_type}:{hash(signature)}",
+    )
+    relative = str(selected.relative_to(root)) if root.is_dir() else selected.name
+    if source_prefix.startswith("s3://"):
+        uri = source_prefix
+    elif source_type == "Kaggle" and root.is_file() and len(signature) > 1 and signature[1]:
+        uri = f"{source_prefix}/{signature[1]}"
+    else:
+        uri = f"{source_prefix}/{relative}"
+    try:
+        return staged_source_spec(
+            selected,
+            source_type=source_type,
+            schema=schema,
+            source_uri=uri,
+        )
+    except ValueError as error:
+        st.sidebar.error(str(error))
+        return None
+
+
 def run_app() -> None:
     try:
         import streamlit as st
@@ -70,6 +263,17 @@ def run_app() -> None:
         raise SystemExit(
             "Streamlit is not installed. Run `pip install -r requirements.txt`."
         ) from error
+
+    # Provider SDKs read credentials from the process environment. Loading the
+    # project-local file here keeps secrets out of widgets and session state.
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        pass
+    else:
+        from attention_maps.explorer import PROJECT_ROOT
+
+        load_dotenv(PROJECT_ROOT / ".env")
 
     st.set_page_config(
         page_title="Dataset Preprocessing",
@@ -94,6 +298,7 @@ def run_app() -> None:
         dataset_id: str,
         config: str | None,
         split: str,
+        revision: str | None,
         filter_column: str | None,
         filter_value: str | None,
         credential_fingerprint: str,
@@ -104,6 +309,7 @@ def run_app() -> None:
             dataset_id,
             split,
             config=config,
+            revision=revision,
             token=_token or None,
             filter_column=filter_column,
             filter_value=filter_value,
@@ -132,11 +338,30 @@ def run_app() -> None:
     ) -> list[dict[str, Any]]:
         return sample_dataset_rows(inventory, sample_size, seed, columns)
 
-    st.sidebar.header("Dataset")
-    source_settings = st.sidebar.expander("Local source settings")
-    data_root_text = source_settings.text_input("Data root", str(DEFAULT_DATA_ROOT))
-    data_root = Path(data_root_text).expanduser()
-    use_custom = source_settings.checkbox("Use custom Parquet path")
+    st.sidebar.header("Dataset source")
+    source_type = st.sidebar.selectbox(
+        "Data source",
+        SOURCE_TYPES,
+        index=SOURCE_TYPES.index("Local"),
+        help=(
+            "Remote sources are registered by their standard identifier. Provider "
+            "credentials are read from .env and are never stored in UI state."
+        ),
+    )
+    if source_type == "Local":
+        source_settings = st.sidebar.expander("Local source settings")
+        data_root_text = source_settings.text_input("Data root", str(DEFAULT_DATA_ROOT))
+        data_root = Path(data_root_text).expanduser()
+        use_custom = source_settings.checkbox(
+            "Use custom Parquet path",
+            help=(
+                "Also accepts one JSON, JSONL, CSV, TXT, or XLSX file. The label is "
+                "retained for backward compatibility."
+            ),
+        )
+    else:
+        data_root = DEFAULT_DATA_ROOT
+        use_custom = False
 
     pipeline_specs = discover_datasets(data_root)
     external_specs = []
@@ -147,12 +372,14 @@ def run_app() -> None:
     catalog_specs = [*pipeline_specs, *external_specs]
 
     spec: DatasetSpec | None = None
-    if use_custom:
+    if source_type != "Local":
+        spec = _render_remote_source(st, source_type)
+    elif use_custom:
         custom_path_text = source_settings.text_input("Parquet file or directory")
         if custom_path_text:
             spec = custom_dataset(Path(custom_path_text))
             if spec is None:
-                st.sidebar.error("No Parquet files were found at that path.")
+                st.sidebar.error("No supported dataset file was found at that path.")
     else:
         source_area = st.sidebar.radio(
             "Dataset workspace",
@@ -173,7 +400,10 @@ def run_app() -> None:
                 "Pipeline stage",
                 PIPELINE_STAGES,
                 format_func=lambda item: PIPELINE_STAGE_LABELS[item],
-                help="Applies to local pipeline datasets; remote catalog entries are stage-independent.",
+                help=(
+                    "Applies to local pipeline datasets; remote catalog entries "
+                    "are stage-independent."
+                ),
             )
             # Prefer an available local stage by default; remote datasets can
             # otherwise trigger a network request as soon as the app starts.
@@ -279,6 +509,7 @@ def run_app() -> None:
                     spec.dataset_id or "",
                     spec.dataset_config,
                     spec.dataset_split or "train",
+                    spec.dataset_revision,
                     spec.filter_column,
                     spec.filter_value,
                     secret_fingerprint(hf_token),
@@ -299,6 +530,9 @@ def run_app() -> None:
                 inventory = project_inventory(
                     cached_inventory(signatures), spec.visible_columns
                 )
+                if spec.source_uri:
+                    inventory = dict(inventory)
+                    inventory["source_uri"] = spec.source_uri
     except (OSError, ValueError, ImportError) as error:
         st.error(f"Could not inspect this dataset: {error}")
         st.stop()
@@ -348,8 +582,12 @@ def run_app() -> None:
         )
     else:
         metric_columns[1].metric("Files", f"{inventory['files']:,}")
-        if inventory["format"] == "json":
-            grouping_label, grouping_value = "JSON documents", inventory["files"]
+        if inventory["format"] in {"json", "jsonl"}:
+            grouping_label, grouping_value = "JSON files", inventory["files"]
+        elif inventory["format"] in {"csv", "xlsx"}:
+            grouping_label, grouping_value = "Tables", inventory["files"]
+        elif inventory["format"] == "text":
+            grouping_label, grouping_value = "Text files", inventory["files"]
         elif inventory["format"] == "kaggle":
             grouping_label, grouping_value = "Worksheets", 1
         elif inventory["format"] == "kaggle_text":
@@ -392,6 +630,7 @@ def run_app() -> None:
                 selected_spec.dataset_id or "",
                 selected_spec.dataset_config,
                 selected_spec.dataset_split or "train",
+                selected_spec.dataset_revision,
                 selected_spec.filter_column,
                 selected_spec.filter_value,
                 secret_fingerprint(selected_hf_token),
@@ -402,9 +641,13 @@ def run_app() -> None:
                 selected_spec.dataset_id or "", selected_spec.dataset_file or ""
             )
         signatures = file_signatures(selected_spec.files)
-        return project_inventory(
+        selected_inventory = project_inventory(
             cached_inventory(signatures), selected_spec.visible_columns
         )
+        if selected_spec.source_uri:
+            selected_inventory = dict(selected_inventory)
+            selected_inventory["source_uri"] = selected_spec.source_uri
+        return selected_inventory
 
     workspace_tab, overlap_tab, sample_tab, inference_tab, metadata_tab = st.tabs(
         ["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]

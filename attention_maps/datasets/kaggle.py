@@ -110,10 +110,10 @@ def _serializable_value(value: Any) -> Any:
     return value
 
 
-def inspect_kaggle_workbook(dataset_id: str, dataset_file: str) -> dict[str, Any]:
-    """Inspect the first worksheet without materializing all records."""
+def inspect_workbook_path(path: Path) -> dict[str, Any]:
+    """Inspect one local workbook without materializing all records."""
 
-    path = download_kaggle_file(dataset_id, dataset_file)
+    path = path.expanduser().resolve()
     workbook = _open_workbook(path)
     try:
         sheet_name, columns, rows = _workbook_rows(workbook)
@@ -135,9 +135,7 @@ def inspect_kaggle_workbook(dataset_id: str, dataset_file: str) -> dict[str, Any
         workbook.close()
 
     return {
-        "format": "kaggle",
-        "dataset_id": dataset_id,
-        "dataset_file": dataset_file,
+        "format": "xlsx",
         "path": str(path),
         "sheet_name": sheet_name,
         "rows": row_count,
@@ -155,6 +153,20 @@ def inspect_kaggle_workbook(dataset_id: str, dataset_file: str) -> dict[str, Any
         ],
         "schema_variants": 1,
     }
+
+
+def inspect_kaggle_workbook(dataset_id: str, dataset_file: str) -> dict[str, Any]:
+    """Download and inspect the first worksheet without retaining all records."""
+
+    inventory = inspect_workbook_path(download_kaggle_file(dataset_id, dataset_file))
+    inventory.update(
+        {
+            "format": "kaggle",
+            "dataset_id": dataset_id,
+            "dataset_file": dataset_file,
+        }
+    )
+    return inventory
 
 
 def inspect_kaggle_text(dataset_id: str, dataset_file: str) -> dict[str, Any]:
@@ -192,6 +204,26 @@ def sample_kaggle_workbook_rows(
 ) -> list[dict[str, Any]]:
     """Uniformly sample worksheet rows with an O(sample_size) reservoir."""
 
+    source_uri = None
+    if inventory.get("dataset_id") and inventory.get("dataset_file"):
+        source_uri = (
+            f"kaggle://datasets/{inventory['dataset_id']}/{inventory['dataset_file']}"
+        )
+    return sample_workbook_rows(
+        inventory, sample_size, seed, columns, source_uri=source_uri
+    )
+
+
+def sample_workbook_rows(
+    inventory: dict[str, Any],
+    sample_size: int,
+    seed: int,
+    columns: Sequence[str],
+    *,
+    source_uri: str | None = None,
+) -> list[dict[str, Any]]:
+    """Uniformly reservoir-sample a local workbook."""
+
     selected_columns = list(columns)
     invalid = set(selected_columns) - set(inventory["columns"])
     if invalid:
@@ -220,10 +252,7 @@ def sample_kaggle_workbook_rows(
                 for column, position in positions.items()
             }
             record["__viewer_row_index"] = seen
-            record["__viewer_file"] = (
-                f"kaggle://datasets/{inventory['dataset_id']}/"
-                f"{inventory['dataset_file']}"
-            )
+            record["__viewer_file"] = source_uri or str(path)
             seen += 1
             if len(reservoir) < sample_size:
                 reservoir.append((seen - 1, record))

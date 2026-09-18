@@ -634,6 +634,30 @@ class DatasetDisplayTests(unittest.TestCase):
 
 
 class DatasetExplorerAppTests(unittest.TestCase):
+    def test_ui_accepts_five_identifier_driven_source_types(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+
+        app = AppTest.from_file(
+            Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+        ).run(timeout=30)
+        source = next(
+            item for item in app.selectbox if item.label == "Data source"
+        )
+        self.assertEqual(
+            source.options,
+            ["Hugging Face", "Kaggle", "Google Drive", "S3", "Local"],
+        )
+        source.set_value("Hugging Face").run(timeout=30)
+        labels = {item.label for item in app.text_input}
+        self.assertIn("Hugging Face dataset ID", labels)
+        self.assertIn("Dataset configuration (optional)", labels)
+        self.assertIn("Dataset split", labels)
+        self.assertIn("Revision (recommended)", labels)
+        self.assertFalse(app.exception)
+
     def test_ui_exposes_d2_for_task_specific_supervised_schema(self):
         try:
             import pyarrow as pa
