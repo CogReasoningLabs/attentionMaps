@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
+
+
+GraphProgress = Callable[[int, int], None]
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ def build_knn_graph(
     backend: str = "auto",
     block_size: int = 1_024,
     max_exact_records: int = 10_000,
+    progress: GraphProgress | None = None,
 ) -> KNNGraph:
     """Build and symmetrize a Euclidean k-NN graph.
 
@@ -62,22 +67,34 @@ def build_knn_graph(
                 f"exact D2 graph is limited to {max_exact_records:,} records; "
                 "install faiss-cpu or select graph_backend=faiss"
             )
-        distances, indices = _exact_neighbors(values, neighbors, block_size)
+        distances, indices = _exact_neighbors(
+            values, neighbors, block_size, progress=progress
+        )
     elif selected_backend == "faiss":
+        if progress:
+            progress(0, values.shape[0])
         distances, indices = _faiss_neighbors(values, neighbors)
+        if progress:
+            progress(values.shape[0], values.shape[0])
     else:
         raise ValueError(f"unsupported D2 graph backend: {selected_backend}")
     return _symmetrize(indices, distances, selected_backend)
 
 
 def _exact_neighbors(
-    values: np.ndarray, n_neighbors: int, block_size: int
+    values: np.ndarray,
+    n_neighbors: int,
+    block_size: int,
+    *,
+    progress: GraphProgress | None,
 ) -> tuple[np.ndarray, np.ndarray]:
     count = values.shape[0]
     norms = np.einsum("ij,ij->i", values, values)
     all_indices = np.arange(count)
     result_indices = np.empty((count, n_neighbors), dtype=np.int64)
     result_distances = np.empty((count, n_neighbors), dtype=np.float32)
+    if progress:
+        progress(0, count)
     for start in range(0, count, block_size):
         end = min(count, start + block_size)
         block = values[start:end]
@@ -92,6 +109,8 @@ def _exact_neighbors(
             chosen = _deterministic_smallest(row, n_neighbors, all_indices)
             result_indices[start + offset] = chosen
             result_distances[start + offset] = row[chosen]
+        if progress:
+            progress(end, count)
     return result_distances, result_indices
 
 

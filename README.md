@@ -134,6 +134,8 @@ Project-level documentation:
   the planned auditable cleaning/deduplication logic shown in the UI
 - [`docs/d2-pruning.md`](docs/d2-pruning.md) — optional post-deduplication D2
   coreset selection, configuration, artifacts, and evaluation boundaries
+- [`docs/standard-training-data-schemas.md`](docs/standard-training-data-schemas.md)
+  — the four canonical schemas and their validation invariants
 - [`docs/google-drive-workspace.md`](docs/google-drive-workspace.md) — team
   workspace uploads, credentials, resumable transfers, and size buckets
 - [`docs/nepali-pretraining-workflow.md`](docs/nepali-pretraining-workflow.md) —

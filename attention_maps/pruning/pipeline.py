@@ -91,8 +91,6 @@ def run_d2_pruning_on_parquet(
             )
         difficulty = np.asarray(difficulty, dtype=np.float64)
 
-    if progress:
-        progress("graph_selection", 0, total_documents)
     labels = None
     if config.label_balanced:
         labels = tuple(
@@ -106,10 +104,12 @@ def run_d2_pruning_on_parquet(
                 f"{missing_labels:,}/{len(labels):,} labels are empty"
             )
     selection = select_d2_coreset(
-        embeddings, difficulty, config, labels=labels
+        embeddings,
+        difficulty,
+        config,
+        labels=labels,
+        progress=progress,
     )
-    if progress:
-        progress("graph_selection", total_documents, total_documents)
     coreset_paths, scores_path = _write_selection_artifacts(
         clean_paths,
         output_dir,

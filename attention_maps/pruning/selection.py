@@ -5,12 +5,15 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import replace
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
 from .contracts import D2PruningConfig, D2SelectionResult
 from .graph import KNNGraph, build_knn_graph
+
+
+D2SelectionProgress = Callable[[str, int, int], None]
 
 
 def confidence_variability(confidences: np.ndarray) -> np.ndarray:
@@ -35,6 +38,7 @@ def select_d2_coreset(
     config: D2PruningConfig,
     *,
     labels: Sequence[object] | np.ndarray | None = None,
+    progress: D2SelectionProgress | None = None,
 ) -> D2SelectionResult:
     """Select a coreset by balancing local density and example difficulty."""
 
@@ -62,8 +66,10 @@ def select_d2_coreset(
         label_values = np.asarray(labels, dtype=object)
         if label_values.shape != (values.shape[0],):
             raise ValueError("labels must contain one value per embedding")
-        return _select_label_balanced(values, difficulty, label_values, config, target)
-    return _select_unbalanced(values, difficulty, config, target)
+        return _select_label_balanced(
+            values, difficulty, label_values, config, target, progress
+        )
+    return _select_unbalanced(values, difficulty, config, target, progress)
 
 
 def _select_unbalanced(
@@ -71,6 +77,7 @@ def _select_unbalanced(
     difficulty: np.ndarray,
     config: D2PruningConfig,
     target: int,
+    progress: D2SelectionProgress | None,
 ) -> D2SelectionResult:
     graph = build_knn_graph(
         embeddings,
@@ -78,10 +85,17 @@ def _select_unbalanced(
         backend=config.graph_backend,
         block_size=config.exact_block_size,
         max_exact_records=config.max_exact_records,
+        progress=(
+            (lambda completed, total: progress("graph", completed, total))
+            if progress
+            else None
+        ),
     )
-    forward = _forward_message_passing(graph, difficulty, config.gamma_forward)
+    forward = _forward_message_passing(
+        graph, difficulty, config.gamma_forward, progress
+    )
     order, chosen_scores, final = _reverse_message_selection(
-        graph, forward, target, config.gamma_reverse
+        graph, forward, target, config.gamma_reverse, progress
     )
     return D2SelectionResult(
         selected_indices=tuple(sorted(order)),
@@ -96,13 +110,20 @@ def _select_unbalanced(
 
 
 def _forward_message_passing(
-    graph: KNNGraph, difficulty: np.ndarray, gamma_forward: float
+    graph: KNNGraph,
+    difficulty: np.ndarray,
+    gamma_forward: float,
+    progress: D2SelectionProgress | None,
 ) -> np.ndarray:
     scores = difficulty.astype(np.float64, copy=True)
+    if progress:
+        progress("forward", 0, graph.nodes)
     for node in range(graph.nodes):
         neighbors, distances = graph.neighbors(node)
         weights = np.exp(-gamma_forward * distances.astype(np.float64))
         scores[node] += float(np.dot(weights, difficulty[neighbors]))
+        if progress and ((node + 1) % 250 == 0 or node + 1 == graph.nodes):
+            progress("forward", node + 1, graph.nodes)
     return scores
 
 
@@ -111,6 +132,7 @@ def _reverse_message_selection(
     forward_scores: np.ndarray,
     target: int,
     gamma_reverse: float,
+    progress: D2SelectionProgress | None,
 ) -> tuple[list[int], list[float], np.ndarray]:
     scores = forward_scores.astype(np.float64, copy=True)
     versions = np.zeros(graph.nodes, dtype=np.int64)
@@ -119,6 +141,8 @@ def _reverse_message_selection(
     heapq.heapify(heap)
     order: list[int] = []
     chosen_scores: list[float] = []
+    if progress:
+        progress("selection", 0, target)
     while len(order) < target:
         while heap:
             negative, node, version = heapq.heappop(heap)
@@ -141,6 +165,8 @@ def _reverse_message_selection(
             heapq.heappush(
                 heap, (-float(scores[other]), other, int(versions[other]))
             )
+        if progress:
+            progress("selection", len(order), target)
     scores[selected] = -np.inf
     return order, chosen_scores, scores
 
@@ -151,6 +177,7 @@ def _select_label_balanced(
     labels: np.ndarray,
     config: D2PruningConfig,
     target: int,
+    progress: D2SelectionProgress | None,
 ) -> D2SelectionResult:
     label_strings = np.asarray([str(value) for value in labels], dtype=object)
     groups: dict[str, np.ndarray] = {}
@@ -163,6 +190,10 @@ def _select_label_balanced(
     directed_edges = undirected_edges = 0
     backends: set[str] = set()
     local_config = replace(config, label_balanced=False)
+    completed = 0
+    active_groups = sum(bool(budgets[label]) for label in groups)
+    if progress:
+        progress("label_groups", 0, active_groups)
     for label, indices in groups.items():
         budget = budgets[label]
         if not budget:
@@ -178,7 +209,7 @@ def _select_label_balanced(
             fraction = budget / len(indices)
             result = _select_unbalanced(
                 embeddings[indices], difficulty[indices],
-                replace(local_config, retention_fraction=fraction), budget,
+                replace(local_config, retention_fraction=fraction), budget, None,
             )
             directed_edges += result.directed_neighbor_edges
             undirected_edges += result.undirected_edges
@@ -186,6 +217,9 @@ def _select_label_balanced(
             forward[indices] = result.forward_scores
             final[indices] = result.final_scores
         local_results.append((label, result, indices))
+        completed += 1
+        if progress:
+            progress("label_groups", completed, active_groups)
 
     order: list[int] = []
     chosen_scores: list[float] = []

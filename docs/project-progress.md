@@ -74,9 +74,9 @@ base checkpoint passes a fixed Nepali evaluation set.
 |---|---|
 | Source data | PDF, news, and music-lyrics sources are represented under a consistent raw-data layout |
 | Cleaning | Shared Unicode, HTML, URL/email, control-character, whitespace, and Devanagari filtering utilities |
-| Canonical schema | Every cleaned source becomes sharded Parquet with stable document and provenance fields |
+| Canonical schema | Four versioned contracts cover pretraining, instruction fine-tuning, task-specific supervised data, and preference tuning |
 | Dataset building | Deterministic source sampling, exact-text deduplication, and document-level train/validation/test splitting |
-| Dataset explorer | Provider/lineage and purpose taxonomy, dependent filters, local/remote inspection, complete-record views, bounded EDA, tokenizer/model comparison, and evaluation tabs |
+| Dataset explorer | Provider/lineage and purpose taxonomy, dependent filters, local/remote inspection, cleaning workspace, supervised D2 selection with live progress, bounded EDA, and inference tools |
 | Survey EDA | Incremental size/script/quality/provenance metrics, exact and approximate duplicate screening, n-grams, co-occurrence networks, evidence exports, and in-app methodology notes |
 | Batched corpus materialization | Local/Drive ingestion, deterministic sampling, bounded process workers, clean Parquet shards, verified exact/near deduplication, paragraph removal, optional D2 coreset selection, EDA/PDF generation, checksums, Zip64 packaging, and optional Drive upload |
 | Drive transfer diagnostics | Standalone recursive download/upload timing, native Google file export, resumable chunks, and JSON throughput evidence |
@@ -159,7 +159,11 @@ Survey results remain diagnostic and bounded unless the UI reports full
 population coverage. The new batch pipeline writes clean, immutable outputs
 without rewriting source datasets. Its optional D2 stage creates a separate,
 audited coreset from the full post-deduplication corpus; it does not classify
-excluded records as bad data. The pipeline currently treats an input tree as
+excluded records as bad data. D2 is currently restricted to traditional NLP
+and domain-specific fine-tuning under the task-specific supervised schema. It
+is available from the Streamlit cleaning workspace with aligned difficulty and
+embedding uploads, class-aware selection, live stage progress, and a diagnostic
+selected/pruned projection. The pipeline currently treats an input tree as
 one corpus. A new report-only explorer tab performs sampled within-dataset
 deduplication and indexed directional inter-dataset containment for two or more
 catalog datasets without removing rows. A formal source manifest and persisted
@@ -192,8 +196,8 @@ The next implementation sequence is:
    overlap metrics, then approve quality, provenance, license, keeper, and
    threshold policies before persisting clusters or enabling removal;
 3. validate D2 on the Nepali movie-review classification dataset against full,
-   random, and difficulty-only baselines before using its pure-text adaptation
-   for pretraining or instruction-tuning corpora;
+   random, and difficulty-only baselines before enabling it for any additional
+   training-data schema;
 4. expand the synthetic-family registry only for reviewed pipeline contracts
    and freeze generated dataset versions with complete lineage;
 5. establish fixed Nepali evaluation sets and use them to choose a base model

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from attention_maps.datasets.schemas import D2_SUPPORTED_USE_CASES
+
 
 @dataclass(frozen=True)
 class D2PruningConfig:
@@ -17,6 +19,7 @@ class D2PruningConfig:
     """
 
     enabled: bool = False
+    use_case: str = "traditional_nlp"
     retention_fraction: float = 0.5
     n_neighbors: int = 10
     gamma_forward: float = 1.0
@@ -38,6 +41,9 @@ class D2PruningConfig:
     difficulty_scores_path: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.use_case not in D2_SUPPORTED_USE_CASES:
+            supported = ", ".join(D2_SUPPORTED_USE_CASES)
+            raise ValueError(f"pruning.use_case must be one of: {supported}")
         if not 0 < self.retention_fraction <= 1:
             raise ValueError("pruning.retention_fraction must be in (0, 1]")
         if self.n_neighbors <= 0:

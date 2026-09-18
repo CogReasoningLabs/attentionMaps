@@ -79,7 +79,7 @@ def run_app() -> None:
     st.title("Dataset Preprocessing & EDA Workspace")
     st.caption(
         "Select a dataset, verify its source and schema, then run Sampling → "
-        "NFC normalization → Deduplication → EDA on the preprocessed output, "
+        "NFC normalization → Deduplication → optional supervised D2 → EDA, "
         "or compare report-only overlap across catalog datasets."
     )
 

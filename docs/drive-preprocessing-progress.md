@@ -46,6 +46,9 @@ rejection, producing EDA products, and packaging immutable outputs.
   k-nearest-neighbor graph backends, paper-consistent forward/reverse message
   passing, uniform or externally supplied difficulty, label-balanced budgets,
   aligned score/embedding validation, comparative EDA, and immutable artifacts.
+- [x] Expose supervised D2 in the Streamlit cleaning workspace with live stage
+  progress, confidence/embedding uploads, class retention, downloads, and a
+  selected-versus-pruned embedding projection.
 - [x] Document local, service-account, browser-OAuth, concurrency, memory, and
   restart behavior.
 
@@ -57,6 +60,7 @@ rejection, producing EDA products, and packaging immutable outputs.
 | 2026-09-14 | Full `unittest` suite after verified-near-dedup upgrade | 210 passed, 4 skipped |
 | 2026-09-14 | Full suite with multi-dataset overlap and explorer integration | 213 passed, 4 skipped |
 | 2026-09-14 | Full suite with optional D2 pruning | 220 passed, 4 skipped |
+| 2026-09-18 | Full suite with supervised D2 Streamlit workflow and schema contracts | 225 passed, 4 skipped |
 | 2026-09-14 | Native Google document transfer | Download/export succeeded; PDF size was measured from exported bytes |
 | 2026-09-14 | Service-account upload to personal My Drive | Correctly rejected by Google because service accounts have no personal storage quota |
 

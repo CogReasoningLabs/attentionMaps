@@ -35,6 +35,8 @@ deduplication:
 # research runs; "main" is suitable only while exploring the configuration.
 pruning:
   enabled: false
+  # traditional_nlp or domain_specific_finetuning only
+  use_case: traditional_nlp
   retention_fraction: 0.50
   n_neighbors: 10
   gamma_forward: 1.0

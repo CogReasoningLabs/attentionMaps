@@ -35,6 +35,7 @@ from .common import (
     sample_dataset_rows,
     text_columns,
 )
+from .pruning import render_d2_pruning_step
 
 LOGGER = pipeline_logger("workspace")
 
@@ -50,7 +51,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         st.info("This dataset has no detectable text fields for the workspace.")
         return
 
-    field_columns = st.columns([3, 2])
+    field_columns = st.columns([3, 2, 2])
     selected_text = field_columns[0].multiselect(
         "Workspace text fields",
         candidates,
@@ -67,6 +68,20 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         inventory["columns"],
         default=source_candidates[:1],
         key=f"workspace-source:{spec.key}",
+    )
+    label_candidates = [
+        value
+        for value in inventory["columns"]
+        if value.casefold() in {"label", "class", "target", "sentiment", "category"}
+    ]
+    label_options = ("None", *inventory["columns"])
+    default_label = label_candidates[0] if label_candidates else "None"
+    selected_label = field_columns[2].selectbox(
+        "Workspace label field",
+        label_options,
+        index=label_options.index(default_label),
+        key=f"workspace-label:{spec.key}",
+        help="Required for class-balanced supervised D2 pruning.",
     )
     population = int(inventory["rows"])
     controls = st.columns(4)
@@ -162,9 +177,11 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         int(seed),
         tuple(selected_text),
         tuple(selected_source),
+        None if selected_label == "None" else selected_label,
     )
     _render_normalization_step(st, state, spec)
     _render_deduplication_step(st, state, spec)
+    render_d2_pruning_step(st=st, state=state, spec=spec)
     _render_clean_eda_step(st, state, spec)
     _render_drive_upload(st, state, spec)
 
@@ -204,6 +221,7 @@ def _render_sampling_step(
     seed: int,
     text_fields: tuple[str, ...],
     source_fields: tuple[str, ...],
+    label_field: str | None,
 ) -> None:
     st.markdown("#### Step 1 · Sampling")
     completed = bool(state.get("sampling_complete"))
@@ -229,7 +247,15 @@ def _render_sampling_step(
                 seed,
                 sampling.disjoint_folds,
             )
-            selected_fields = tuple(dict.fromkeys((*text_fields, *source_fields)))
+            selected_fields = tuple(
+                dict.fromkeys(
+                    (
+                        *text_fields,
+                        *source_fields,
+                        *((label_field,) if label_field else ()),
+                    )
+                )
+            )
             unique: dict[tuple[str, str], dict[str, Any]] = {}
             actual_reads = 0
             disjoint_rows = (
@@ -315,6 +341,7 @@ def _render_sampling_step(
                     "sample_plan": sampling,
                     "text_fields": text_fields,
                     "source_fields": source_fields,
+                    "label_field": label_field,
                     "seed": seed,
                 }
             )
@@ -384,6 +411,7 @@ def _render_normalization_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                 state["sample_records"],
                 state["text_fields"],
                 state["source_fields"],
+                label_column=state.get("label_field"),
                 progress=update,
             )
             for downstream_key in (
@@ -394,6 +422,8 @@ def _render_normalization_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                 "eda_profile",
                 "eda_output",
                 "drive_upload",
+                "d2_result",
+                "d2_output",
             ):
                 state.pop(downstream_key, None)
             state["normalization"] = result
@@ -571,6 +601,8 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
             state.pop("eda_profile", None)
             state.pop("eda_output", None)
             state.pop("drive_upload", None)
+            state.pop("d2_result", None)
+            state.pop("d2_output", None)
             LOGGER.info(
                 "STEP 3 COMPLETE dataset=%s input=%d exact_removed=%d near_removed=%d "
                 "paragraphs_removed=%d retained=%d output=%s",
@@ -752,7 +784,7 @@ def _render_drive_upload(st: Any, state: dict[str, Any], spec: Any) -> None:
 
 
 def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
-    st.markdown("#### Step 4 · EDA on preprocessed dataset")
+    st.markdown("#### Step 5 · EDA on preprocessed dataset")
     available = "deduplication" in state and bool(state["deduplication"].documents)
     completed = "eda_profile" in state
     st.write(
@@ -766,7 +798,7 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
         "the raw source."
     )
     if st.button(
-        "Start Step 4 · Run preprocessed EDA",
+        "Start Step 5 · Run preprocessed EDA",
         type="primary",
         disabled=not available,
         key=f"workspace-eda:{spec.key}",

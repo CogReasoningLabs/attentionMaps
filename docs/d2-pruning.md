@@ -5,6 +5,9 @@ selection stage after normalization, quality filtering, exact/near
 deduplication, and boilerplate removal. It never rewrites the source dataset or
 the full `clean-data/` output.
 
+The supported record contracts are defined in
+[Standard training-data schemas](standard-training-data-schemas.md).
+
 Primary references:
 
 - Maharana, Yadav, and Bansal,
@@ -68,6 +71,7 @@ result = select_d2_coreset(
     embeddings,
     difficulty_scores,
     D2PruningConfig(
+        use_case="traditional_nlp",
         retention_fraction=0.50,
         n_neighbors=10,
         gamma_forward=1.0,
@@ -86,10 +90,9 @@ removed.”
 ### Uniform difficulty
 
 `difficulty_mode: uniform` assigns every node a value of one. Selection is then
-driven by embedding-space density and reverse-message diversity. This is useful
-for an initial self-supervised study, but applying it to pure text corpora is an
-adaptation: the paper's uniform-score experiment used self-supervised image
-embeddings.
+driven by embedding-space density and reverse-message diversity. It is retained
+only as a diagnostic ablation for the two supported supervised use cases. It is
+not authorization to apply this implementation to pretraining or SFT corpora.
 
 ### Supervised NLP difficulty
 
@@ -112,6 +115,17 @@ np.savez(
     "difficulty.npz",
     scores=difficulty_scores,
     doc_ids=np.asarray(clean_doc_ids),
+)
+```
+
+The Streamlit workspace can also calculate these scores from confidence
+history directly. Its upload uses an `(epochs, documents)` array:
+
+```python
+np.savez(
+    "confidence-history.npz",
+    confidences=correct_label_probabilities,
+    doc_ids=np.asarray(clean_workspace_row_ids),
 )
 ```
 
@@ -152,6 +166,7 @@ input:
 
 pruning:
   enabled: true
+  use_case: traditional_nlp
   retention_fraction: 0.50
   n_neighbors: 10
   gamma_forward: 1.0
@@ -180,10 +195,39 @@ Run the existing pipeline command:
   --config configs/eda/drive_preprocessing.example.yaml
 ```
 
-Leave `label_balanced: false` for unlabelled corpora. When it is enabled,
-`input.label_column` must be populated on every retained clean row. Selection is
-performed within each label and budgets are assigned proportionally with a
-deterministic largest-remainder rule.
+When `label_balanced` is enabled, `input.label_column` must be populated on every
+retained clean row. Selection is performed within each label and budgets are
+assigned proportionally with a deterministic largest-remainder rule.
+
+## Streamlit workspace
+
+Launch the existing explorer:
+
+```bash
+.venv/bin/python scripts/run_dataset_explorer.py
+```
+
+In the `WORKSPACE` tab:
+
+1. Select text, provenance, and label fields.
+2. Run sampling, NFC normalization, and deduplication.
+3. Set the canonical schema to **Task-specific supervised**.
+4. Choose **Traditional NLP task** or **Domain-specific fine-tuning**.
+5. Confirm that the workspace contains training-split records only.
+6. Upload correct-label confidence history or precomputed scores. Uniform
+   difficulty is available only for an explicit ablation.
+7. Generate XLM-R embeddings in the UI or upload aligned embeddings.
+8. Set retention, `k`, graph backend, class balancing, and gamma values, then
+   run Step 4.
+
+The UI reports live progress for embedding generation, graph construction,
+forward message passing, reverse-message selection, and artifact writing. It
+then displays retained count, class retention, and a diagnostic randomized-PCA
+view of selected versus pruned examples. D2 operates on full embeddings, not
+the displayed two-dimensional projection.
+
+Every upload must contain `doc_ids` in exact clean-workspace order. The UI
+rejects misaligned arrays and blocks D2 on validation/test catalog splits.
 
 ## Outputs
 
@@ -206,6 +250,19 @@ The top-level run manifest points to these artifacts. If EDA is enabled, both
 the full clean dataset and D2 coreset are analyzed. The Zip64 package includes
 the full clean data and D2 outputs.
 
+An interactive workspace run writes an immutable timestamped folder below the
+Step 3 workspace directory:
+
+```text
+d2/<timestamp>/
+  d2_coreset.jsonl
+  d2_scores.csv
+  d2_manifest.json
+  embeddings.npy          # when generated in the UI
+  difficulty_input.npz    # when confidence/scores were uploaded
+  embeddings_input.npz    # when embeddings were uploaded
+```
+
 ## Graph backends and resource limits
 
 - `exact` computes exact squared-L2 neighbors in bounded query blocks. It does
@@ -221,11 +278,14 @@ text remains in Parquet and is streamed again when artifacts are materialized.
 
 ## Dataset policy
 
+- D2 is currently enabled only for `traditional_nlp` and
+  `domain_specific_finetuning`, both represented by the task-specific
+  supervised schema.
 - Start the supervised evaluation with the Nepali movie-review sentiment
   dataset because it is closest to the paper's IMDb experiment.
 - Apply supervised D2 to hate-speech tweets only after label/schema validation.
-- Treat D2 on pretraining and instruction-tuning text as an experimental
-  adaptation and compare it against random and difficulty-only selection.
+- Do not enable this implementation for pretraining, instruction fine-tuning,
+  or preference tuning datasets.
 - Never run pruning on evaluation or test datasets. Split protection and
   duplicate-cluster isolation must happen before difficulty training and D2
   selection.
