@@ -51,21 +51,26 @@ class EDASchemaTests(unittest.TestCase):
             {
                 "text": f"{common}\nनेपालको पहिलो समाचार सामग्री।",
                 "source": "a",
+                "label": "news",
                 "__viewer_row_index": 1,
             },
             {
                 "text": f"{common}\nअर्को फरक समाचार सामग्री।",
                 "source": "b",
+                "label": "notice",
                 "__viewer_row_index": 2,
             },
             {
                 "text": f"  {common}\nनेपालको पहिलो समाचार सामग्री।  ",
                 "source": "a",
+                "label": "news",
                 "__viewer_row_index": 3,
             },
             {"missing": "text"},
         ]
-        normalized = normalize_workspace_sample(records, ("text",), ("source",))
+        normalized = normalize_workspace_sample(
+            records, ("text",), ("source",), label_column="label"
+        )
 
         self.assertEqual(normalized.normalization, "NFC")
         self.assertEqual(normalized.normalized_rows, 3)
@@ -82,6 +87,9 @@ class EDASchemaTests(unittest.TestCase):
         self.assertEqual(result.repeated_paragraph_patterns, 1)
         self.assertEqual(result.paragraphs_removed, 2)
         self.assertEqual(result.retained_documents, 2)
+        self.assertEqual(
+            {document.label for document in result.documents}, {"news", "notice"}
+        )
         self.assertNotIn(common, workspace_documents_jsonl(result.documents).decode())
         self.assertIn("exact_document", workspace_audit_csv(result).decode())
         with tempfile.TemporaryDirectory() as directory:

@@ -312,7 +312,9 @@ class DatasetSpec:
     dataset_id: str | None = None
     dataset_config: str | None = None
     dataset_split: str | None = None
+    dataset_revision: str | None = None
     dataset_file: str | None = None
+    source_uri: str | None = None
     filter_column: str | None = None
     filter_value: str | None = None
     download_bytes: int | None = None
@@ -348,12 +350,16 @@ class DatasetSpec:
 
     @property
     def location(self) -> Path | str:
+        if self.source_uri:
+            return self.source_uri
         if self.format.startswith("kaggle") and self.dataset_id and self.dataset_file:
             return f"kaggle://datasets/{self.dataset_id}/{self.dataset_file}"
         if self.dataset_id:
             config = f"/{self.dataset_config}" if self.dataset_config else ""
             split = f"/{self.dataset_split}" if self.dataset_split else ""
             location = f"hf://datasets/{self.dataset_id}{config}{split}"
+            if self.dataset_revision:
+                location += f"@{self.dataset_revision}"
             if self.filter_column and self.filter_value:
                 location += f"?{self.filter_column}={self.filter_value}"
             return location
@@ -513,16 +519,38 @@ def discover_datasets(data_root: Path) -> list[DatasetSpec]:
 
 
 def custom_dataset(path: Path) -> DatasetSpec | None:
-    """Create a dataset specification from a custom Parquet file or directory."""
+    """Create a dataset specification from a supported local file/directory."""
 
-    files = _parquet_files(path.expanduser())
+    resolved = path.expanduser().resolve()
+    supported = {".parquet", ".json", ".jsonl", ".ndjson", ".csv", ".txt", ".xlsx"}
+    if resolved.is_file() and resolved.suffix.lower() in supported:
+        files = (resolved,)
+    elif resolved.is_dir():
+        candidates = tuple(
+            candidate.resolve()
+            for candidate in sorted(resolved.rglob("*"))
+            if candidate.is_file()
+            and not candidate.is_symlink()
+            and candidate.suffix.lower() in supported
+        )
+        suffixes = {candidate.suffix.lower() for candidate in candidates}
+        files = candidates if suffixes == {".parquet"} else ()
+    else:
+        files = ()
     if not files:
         return None
+    suffix = files[0].suffix.lower()
+    format_name = {
+        ".jsonl": "jsonl",
+        ".ndjson": "jsonl",
+        ".txt": "text",
+    }.get(suffix, suffix.lstrip("."))
     return DatasetSpec(
-        key=f"custom:{path.expanduser().resolve()}",
-        label=path.expanduser().resolve().name,
+        key=f"custom:{resolved}",
+        label=resolved.name,
         stage="custom",
         files=files,
+        format=format_name,
         provider=LOCAL_PROVIDER,
         tags=("custom", "purpose pending review"),
     )

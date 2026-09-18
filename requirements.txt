@@ -23,5 +23,6 @@ bitsandbytes>=0.48
 safetensors>=0.7,<1
 tiktoken>=0.9,<1
 sacrebleu>=2.4,<3
-kagglehub>=0.3.12,<1
+kagglehub>=0.4.3,<2
+boto3>=1.35,<2
 openpyxl>=3.1,<4

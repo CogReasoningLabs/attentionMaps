@@ -4,10 +4,12 @@ from .manifest import render_manifest_tab
 from .inference_hub import render_inference_hub
 from .overlap import render_overlap_tab
 from .overview import render_details_tab, render_sample_tab
+from .pruning import render_d2_pruning_step
 from .workspace import render_workspace_tab
 
 __all__ = [
     "render_details_tab",
+    "render_d2_pruning_step",
     "render_inference_hub",
     "render_manifest_tab",
     "render_overlap_tab",

@@ -26,9 +26,15 @@ class WorkspaceDocument:
     row_id: str
     text: str
     source: str = ""
+    label: str = ""
 
     def as_record(self) -> dict[str, str]:
-        return {"row_id": self.row_id, "text": self.text, "source": self.source}
+        return {
+            "row_id": self.row_id,
+            "text": self.text,
+            "source": self.source,
+            "label": self.label,
+        }
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,7 @@ def normalize_workspace_sample(
     text_columns: Sequence[str],
     source_columns: Sequence[str] = (),
     *,
+    label_column: str | None = None,
     progress: WorkspaceProgress | None = None,
 ) -> NormalizationResult:
     """Extract selected fields and create NFC-normalized workspace documents."""
@@ -103,6 +110,11 @@ def normalize_workspace_sample(
                 row_id=row_id,
                 text=normalized,
                 source=extract_source(record, source_columns),
+                label=(
+                    str(record.get(label_column)).strip()
+                    if label_column and record.get(label_column) is not None
+                    else ""
+                ),
             )
         )
         if progress and (index + 1) % 250 == 0:
@@ -163,7 +175,14 @@ def deduplicate_workspace_documents(
                 WorkspaceRemoval(document.row_id, "empty_after_boilerplate")
             )
             continue
-        cleaned.append(WorkspaceDocument(document.row_id, text, document.source))
+        cleaned.append(
+            WorkspaceDocument(
+                row_id=document.row_id,
+                text=text,
+                source=document.source,
+                label=document.label,
+            )
+        )
         if progress and index % 250 == 0:
             progress("boilerplate_removal", index, len(retained))
     if progress:

@@ -42,6 +42,13 @@ rejection, producing EDA products, and packaging immutable outputs.
   tab for within-dataset duplicate ratios and all selected directional pairs.
 - [x] Add exact/verified-near match counts, directional document containment,
   matched-document token mass, CSV downloads, and a containment heatmap.
+- [x] Add optional post-deduplication D2 coreset selection with exact/FAISS
+  k-nearest-neighbor graph backends, paper-consistent forward/reverse message
+  passing, uniform or externally supplied difficulty, label-balanced budgets,
+  aligned score/embedding validation, comparative EDA, and immutable artifacts.
+- [x] Expose supervised D2 in the Streamlit cleaning workspace with live stage
+  progress, confidence/embedding uploads, class retention, downloads, and a
+  selected-versus-pruned embedding projection.
 - [x] Document local, service-account, browser-OAuth, concurrency, memory, and
   restart behavior.
 
@@ -52,6 +59,8 @@ rejection, producing EDA products, and packaging immutable outputs.
 | 2026-09-14 | Focused batch and EDA tests | 25 passed |
 | 2026-09-14 | Full `unittest` suite after verified-near-dedup upgrade | 210 passed, 4 skipped |
 | 2026-09-14 | Full suite with multi-dataset overlap and explorer integration | 213 passed, 4 skipped |
+| 2026-09-14 | Full suite with optional D2 pruning | 220 passed, 4 skipped |
+| 2026-09-18 | Full suite with supervised D2 Streamlit workflow and schema contracts | 225 passed, 4 skipped |
 | 2026-09-14 | Native Google document transfer | Download/export succeeded; PDF size was measured from exported bytes |
 | 2026-09-14 | Service-account upload to personal My Drive | Correctly rejected by Google because service accounts have no personal storage quota |
 
@@ -161,6 +170,10 @@ mode until reviewed.
 - Compare token shingle sizes 3/5/7 and Jaccard/edit thresholds 0.80/0.85/0.90.
 - Benchmark MinHash configurations for candidate recall, runtime, and peak RSS.
 - Review repeated short-pattern behavior and paragraph removal semantics.
+- Validate the D2 supervised-NLP path on Nepali movie-review sentiment using
+  frozen train/development/test splits and recorded confidence dynamics.
+- Benchmark D2 `k`, reverse-message gamma, embedding model/pooling, pruning
+  rates, runtime, peak memory, and random/difficulty-only baselines.
 - [ ] Add an optional GPU-based Task2Vec diversity-coefficient study after
   cleaning and deduplication, following
   [Miranda et al.](https://arxiv.org/abs/2306.13840):

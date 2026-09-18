@@ -634,6 +634,87 @@ class DatasetDisplayTests(unittest.TestCase):
 
 
 class DatasetExplorerAppTests(unittest.TestCase):
+    def test_ui_accepts_five_identifier_driven_source_types(self):
+        try:
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit is not installed")
+
+        app = AppTest.from_file(
+            Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+        ).run(timeout=30)
+        source = next(
+            item for item in app.selectbox if item.label == "Data source"
+        )
+        self.assertEqual(
+            source.options,
+            ["Hugging Face", "Kaggle", "Google Drive", "S3", "Local"],
+        )
+        source.set_value("Hugging Face").run(timeout=30)
+        labels = {item.label for item in app.text_input}
+        self.assertIn("Hugging Face dataset ID", labels)
+        self.assertIn("Dataset configuration (optional)", labels)
+        self.assertIn("Dataset split", labels)
+        self.assertIn("Revision (recommended)", labels)
+        self.assertFalse(app.exception)
+
+    def test_ui_exposes_d2_for_task_specific_supervised_schema(self):
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from streamlit.testing.v1 import AppTest
+        except ModuleNotFoundError:
+            self.skipTest("Streamlit and PyArrow are required")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dataset_path = Path(temporary_directory) / "labelled.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "text": ["पहिलो", "दोस्रो", "तेस्रो", "चौथो"],
+                        "label": ["a", "a", "b", "b"],
+                    }
+                ),
+                dataset_path,
+            )
+            app = AppTest.from_file(
+                Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
+            ).run(timeout=30)
+            next(
+                item
+                for item in app.checkbox
+                if item.label == "Use custom Parquet path"
+            ).set_value(True).run(timeout=30)
+            next(
+                item
+                for item in app.text_input
+                if item.label == "Parquet file or directory"
+            ).set_value(str(dataset_path)).run(timeout=30)
+            schema = next(
+                item
+                for item in app.selectbox
+                if item.label == "Canonical training-data schema"
+            )
+            self.assertIsNone(schema.value)
+            schema.set_value("task_specific_supervised").run(timeout=30)
+
+        use_case = next(
+            item
+            for item in app.radio
+            if item.label == "Approved D2 use case"
+        )
+        self.assertEqual(
+            use_case.options,
+            ["Traditional NLP task", "Domain-specific fine-tuning"],
+        )
+        run_button = next(
+            item
+            for item in app.button
+            if item.label == "Start Step 4 · Run D2 pruning"
+        )
+        self.assertTrue(run_button.disabled)
+        self.assertFalse(app.exception)
+
     def test_app_exposes_only_the_focused_preprocessing_tabs(self):
         source = (
             Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
