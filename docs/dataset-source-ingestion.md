@@ -11,6 +11,11 @@ adding every dataset to the repository's curated catalog:
 | S3-compatible storage | Exact `s3://bucket/key` object URI | Checks object size and atomically stages one object locally. |
 | Local | File or Parquet directory path | Reads immutable source metadata directly. |
 
+Some very large Hub datasets, including CulturaX, omit split counts from the
+streaming `DatasetInfo`. In that case the loader uses Hugging Face Dataset
+Viewer size metadata for the requested configuration and split; it does not
+scan the corpus to count rows.
+
 After registration, every source enters the same workflow:
 
 ```text

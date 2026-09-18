@@ -7,6 +7,9 @@ import csv
 import json
 import os
 import random
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -19,6 +22,11 @@ from attention_maps.datasets.kaggle import (
 )
 
 from .catalog import VIEWER_PREFIX
+
+
+HUGGINGFACE_DATASET_VIEWER_SIZE_URL = (
+    "https://datasets-server.huggingface.co/size"
+)
 
 def project_inventory(
     inventory: dict[str, Any], visible_columns: Sequence[str] | None
@@ -340,15 +348,28 @@ def inspect_huggingface_dataset(
             token=token or None,
             **load_options,
         )
-        split_info = stream.info.splits.get(split)
+        split_info = (getattr(stream.info, "splits", None) or {}).get(split)
         features = stream.features or {}
     except Exception as error:
         raise ValueError(f"Could not inspect Hugging Face dataset: {error}") from error
+    viewer_size = None
     if split_info is None:
-        raise ValueError(f"Hugging Face dataset has no {split!r} split metadata")
+        viewer_size = _huggingface_viewer_split_size(
+            dataset_id,
+            config=config or getattr(stream.info, "config_name", None),
+            split=split,
+            token=token,
+        )
     shard_lengths = list(getattr(split_info, "shard_lengths", None) or [])
     shard_count = len(shard_lengths) or int(getattr(stream, "num_shards", 1))
-    memory_bytes = int(split_info.num_bytes)
+    rows = int(
+        split_info.num_examples if split_info is not None else viewer_size["num_rows"]
+    )
+    memory_bytes = int(
+        split_info.num_bytes
+        if split_info is not None
+        else viewer_size.get("num_bytes_memory") or 0
+    )
     hub_file_bytes = getattr(stream.info, "download_size", None)
     if not hub_file_bytes:
         checksums = getattr(stream.info, "download_checksums", None) or {}
@@ -358,6 +379,10 @@ def inspect_huggingface_dataset(
             if isinstance(item, dict) and item.get("num_bytes") is not None
         ]
         hub_file_bytes = sum(int(size) for size in checksum_sizes) or None
+    if not hub_file_bytes and viewer_size is not None:
+        hub_file_bytes = viewer_size.get("num_bytes_original_files") or viewer_size.get(
+            "num_bytes_parquet_files"
+        )
     if hub_file_bytes is not None:
         hub_file_bytes = int(hub_file_bytes)
     inventory = {
@@ -366,7 +391,7 @@ def inspect_huggingface_dataset(
         "dataset_config": config,
         "dataset_split": split,
         "dataset_revision": revision,
-        "rows": int(split_info.num_examples),
+        "rows": rows,
         "files": shard_count,
         # Prefer physical/download bytes for storage displays. SplitInfo's
         # num_bytes is the decoded Arrow footprint, not disk usage.
@@ -385,6 +410,9 @@ def inspect_huggingface_dataset(
             for name, feature in features.items()
         ],
         "schema_variants": 1,
+        "size_metadata_source": (
+            "dataset_info" if split_info is not None else "dataset_viewer"
+        ),
     }
     if filter_column and filter_value:
         try:
@@ -413,6 +441,51 @@ def inspect_huggingface_dataset(
             inventory["bytes"] = inventory["memory_bytes"]
             inventory["bytes_estimated"] = True
     return inventory
+
+
+def _huggingface_viewer_split_size(
+    dataset_id: str,
+    *,
+    config: str | None,
+    split: str,
+    token: str | None,
+) -> dict[str, Any]:
+    """Fetch bounded split sizes when streaming DatasetInfo omits splits."""
+
+    query = urllib.parse.urlencode({"dataset": dataset_id})
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(
+        f"{HUGGINGFACE_DATASET_VIEWER_SIZE_URL}?{query}",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "Hugging Face streaming metadata does not include row counts, and "
+            f"Dataset Viewer size lookup failed: {error}"
+        ) from error
+    split_sizes = payload.get("size", {}).get("splits", [])
+    matches = [
+        item
+        for item in split_sizes
+        if isinstance(item, dict)
+        and item.get("split") == split
+        and (config is None or item.get("config") == config)
+    ]
+    if config is None and len(matches) > 1:
+        default_matches = [item for item in matches if item.get("config") == "default"]
+        matches = default_matches or matches
+    if len(matches) != 1 or matches[0].get("num_rows") is None:
+        requested = f"{config or '<default>'}/{split}"
+        raise ValueError(
+            "Hugging Face streaming metadata does not include row counts, and "
+            f"Dataset Viewer has no unambiguous size entry for {requested}."
+        )
+    return matches[0]
 
 
 def sample_parquet_rows(

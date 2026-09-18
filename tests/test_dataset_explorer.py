@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -494,6 +495,54 @@ class DatasetDisplayTests(unittest.TestCase):
         self.assertEqual(records[0]["conversations"][0]["value"], "प्रश्न")
         self.assertTrue(records[0][f"{VIEWER_PREFIX}identity_stable"])
         self.assertEqual(stream.shuffle_arguments["buffer_size"], 50)
+
+    def test_huggingface_inventory_falls_back_when_stream_splits_are_missing(self):
+        class FakeStream:
+            num_shards = 6
+            features = {"text": "string", "source": "string"}
+            info = SimpleNamespace(
+                splits=None,
+                download_size=None,
+                download_checksums=None,
+            )
+
+        response = io.BytesIO(
+            json.dumps(
+                {
+                    "size": {
+                        "splits": [
+                            {
+                                "dataset": "uonlp/CulturaX",
+                                "config": "ne",
+                                "split": "train",
+                                "num_bytes_parquet_files": 7_911_271_370,
+                                "num_bytes_memory": 21_880_279_437,
+                                "num_rows": 3_124_040,
+                                "num_columns": 4,
+                            }
+                        ]
+                    }
+                }
+            ).encode("utf-8")
+        )
+        with (
+            patch("datasets.load_dataset", return_value=FakeStream()),
+            patch(
+                "attention_maps.explorer.inspection.urllib.request.urlopen",
+                return_value=response,
+            ) as viewer,
+        ):
+            inventory = inspect_huggingface_dataset(
+                "uonlp/CulturaX", "train", config="ne", token="secret"
+            )
+
+        self.assertEqual(inventory["rows"], 3_124_040)
+        self.assertEqual(inventory["files"], 6)
+        self.assertEqual(inventory["memory_bytes"], 21_880_279_437)
+        self.assertEqual(inventory["hub_file_bytes"], 7_911_271_370)
+        self.assertEqual(inventory["size_metadata_source"], "dataset_viewer")
+        request = viewer.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer secret")
 
     def test_previews_nested_and_long_values(self):
         records = preview_records(
