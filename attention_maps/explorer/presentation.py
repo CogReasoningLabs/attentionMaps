@@ -10,7 +10,10 @@ from .catalog import MANIFEST_NAMES, TEXT_FIELD_NAMES, VIEWER_PREFIX, DatasetSpe
 def find_manifest(spec: DatasetSpec, data_root: Path) -> Path | None:
     """Find the closest known manifest associated with a dataset."""
 
-    start = spec.location if spec.location.is_dir() else spec.location.parent
+    location = spec.location
+    if not isinstance(location, Path):
+        return None
+    start = location if location.is_dir() else location.parent
     boundary = data_root.expanduser().resolve()
     current = start.resolve()
     while True:

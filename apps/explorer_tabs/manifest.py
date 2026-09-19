@@ -7,12 +7,12 @@ from typing import Any
 
 from .common import find_manifest, json
 
+
 def render_manifest_tab(*, st: Any, spec: Any, data_root: Path) -> None:
-    remote_dataset = spec.format in {
-        "huggingface",
-        "kaggle",
-        "kaggle_text",
-    }
+    # Dynamically staged Kaggle/Drive/S3 files keep their local file format
+    # (for example, ``xlsx``) while their logical location remains a remote
+    # URI. The location type is therefore the reliable local/remote boundary.
+    remote_dataset = isinstance(spec.location, str)
     manifest_path = None if remote_dataset else find_manifest(spec, data_root)
     if manifest_path is None:
         st.info(

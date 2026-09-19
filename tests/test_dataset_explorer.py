@@ -290,6 +290,23 @@ class DatasetDiscoveryTests(unittest.TestCase):
 
             self.assertEqual(find_manifest(spec, root), manifest)
 
+    def test_remote_uri_has_no_local_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            cached_file = root / "cache/records.xlsx"
+            cached_file.parent.mkdir()
+            cached_file.touch()
+            spec = DatasetSpec(
+                "dynamic:kaggle:records",
+                "Kaggle records",
+                "dataset",
+                (cached_file,),
+                format="xlsx",
+                source_uri="kaggle://datasets/owner/dataset/records.xlsx",
+            )
+
+            self.assertIsNone(find_manifest(spec, root))
+
     def test_exposes_separate_original_and_translated_lima_views(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "lima_translations.json"
