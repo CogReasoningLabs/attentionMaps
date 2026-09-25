@@ -1,0 +1,5 @@
+# Optional additions to the main project environment. Original NepBERTa uses
+# the separate requirements-nepberta.txt environment described in the guide.
+scikit-learn>=1.5,<2
+plotly>=5.24,<7
+sentence-transformers>=5,<6

@@ -1,0 +1,44 @@
+# Central configuration for every embedding model and clustering run.
+# Run: venv/bin/python scripts/cluster_dataset.py run --settings configs/embeddings.yaml
+# Paths are relative to this file. Explicit CLI arguments override these values.
+
+# 1. Choose the DATASOURCE provider first (independent of the embedding model).
+# Remote sources require an explicit provider; they are never guessed.
+provider: kaggle                # huggingface | kaggle
+
+# Kaggle uses dataset + dataset_file.
+# Hugging Face uses dataset + revision/config/split/shards; set dataset_file: null.
+dataset: hsebarp/oscar-corpus-nepali
+dataset_file: ne_dedup.txt       # Kaggle file; set null for Hugging Face.
+revision: null                  # Hugging Face dataset revision.
+config: null                    # Hugging Face dataset configuration, e.g. ne.
+split: null                     # Hugging Face split, e.g. train.
+shards: null                    # Hugging Face: null = all selected split's shards.
+local: null                    # To use local data, set this and set dataset to null.
+
+# 1a. Define one complete data instance using the project's canonical schemas.
+training_schema: pretraining    # auto | pretraining | instruction_finetuning | task_specific_supervised | preference_tuning
+text_record_unit: line          # TXT: line or blank_line (requires actual blank-line document boundaries).
+field_mapping: {}               # Canonical -> source path, e.g. {text: body, label: category}.
+task_name: null                 # Supervised task name when the source has no task column.
+text_columns: [text]            # Document/supervised input fields; conversations/preferences use all schema fields.
+languages: [ne]                 # Explicit declaration, not an embedding-based detection.
+
+
+# 2. Choose the embedding model independently of the datasource:
+model: nepali-bert              # nepali-bert | nepberta | embeddinggemma
+model_id: null                  # null uses the selected preset's official checkpoint.
+model_revision: main            # Resolved to a commit and saved in the report.
+embedding_task: clustering      # clustering | similarity (Gemma's task prompt).
+device: auto                    # auto | cpu | cuda
+batch_size: 32
+max_length: null                # Model's supported chunk limit; portable across presets.
+
+# Scope and clustering (shared by all models).
+max_records: 10000              # null = whole selection; 1000 = explicit prefix trial.
+clusters: 50
+cluster_batch_size: 1024
+cluster_epochs: 3
+wordcloud_font: null            # Auto-detect Noto Devanagari; or provide a font path.
+seed: 42
+output_dir: ../artifacts/dataset_embeddings/my-run  # Choose a new directory for each run.
