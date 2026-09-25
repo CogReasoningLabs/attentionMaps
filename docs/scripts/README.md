@@ -1,5 +1,9 @@
 # Script reference
 
+- [Dataset inspection, script filtering, and saved Streamlit reports](inspect-dataset.md):
+  `python scripts/inspect_dataset.py --dataset owner/dataset --list`
+
+
 This directory documents every maintained file under `scripts/` that has a
 user-facing command or reusable API.
 
@@ -20,6 +24,7 @@ step.
 
 | File | Type | Purpose | Documentation |
 |---|---|---|---|
+| `cluster_dataset.py` | CLI | Corpus embeddings, pair similarity, all-record clustering, and B1–B3 sample exports | [Embedding and clustering reference](cluster-dataset.md) |
 | `get_huggingface_dataset_sizes.py` | CLI | Export metadata-only file sizes for a list of Hugging Face dataset IDs, configurations, or splits | [Dataset-size export](huggingface-dataset-sizes.md) |
 | `download_nepali_pretrain_corpus.py` | CLI | Download versioned Hugging Face Parquet sources into immutable raw storage | [Download reference](download-nepali-pretrain-corpus.md) |
 | `clean_pretraining_sources.py` | CLI | Clean and canonicalize PDF, news, and song documents independently | [Cleaning reference](../cleaning-cli-reference.md) |

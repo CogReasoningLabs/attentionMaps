@@ -18,6 +18,17 @@ import os
 from pathlib import Path
 from typing import Any
 
+from apps.components.dataset_inspection import (
+    render_huggingface_source, render_huggingface_selection,
+)
+from apps.components.file_formats import render_file_formats
+from apps.components.semantic_results import render_semantic_results
+from apps.components.inspection_reports import render_language_status, render_script_results
+from attention_maps.explorer.file_formats import describe_dataset_formats
+from attention_maps.explorer.huggingface import (
+    discover_huggingface_dataset, inspect_huggingface_configuration, inspect_huggingface_selection,
+)
+
 from apps.components import (
     DATASET_CATALOG_AREA,
     SYNTHETIC_DATA_AREA,
@@ -48,7 +59,6 @@ from attention_maps.explorer import (
     format_decimal_bytes,
     himalaya_ai_dataset_specs,
     inspect_dataset,
-    inspect_huggingface_dataset,
     iriis_nepali_text_corpus_specs,
     kaggle_dataset_specs,
     project_inventory,
@@ -58,7 +68,6 @@ from attention_maps.explorer import (
     stage_kaggle_source,
     stage_s3_object,
     staged_source_spec,
-    huggingface_source_spec,
 )
 from attention_maps.datasets.schemas import STANDARD_TRAINING_SCHEMAS
 from apps.explorer_tabs import (
@@ -71,55 +80,10 @@ from apps.explorer_tabs import (
 )
 
 
-def _render_remote_source(st: Any, source_type: str) -> DatasetSpec | None:
+def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec | None:
     """Render identifier-driven source controls and return a registered source."""
 
-    schema = st.sidebar.selectbox(
-        "Standard dataset schema",
-        STANDARD_TRAINING_SCHEMAS,
-        format_func=lambda item: item.label,
-        key=f"source-schema:{source_type}",
-        help="Controls atomic records and whether supervised D2 is available.",
-    ).key
     state_key = f"registered-source:{source_type}"
-
-    if source_type == "Hugging Face":
-        st.sidebar.caption(
-            "Loading strategy: inspect metadata and stream a bounded sample; the "
-            "complete split is not downloaded."
-        )
-        dataset_id = st.sidebar.text_input(
-            "Hugging Face dataset ID",
-            placeholder="owner/dataset",
-            key="source-hf-id",
-        )
-        config = st.sidebar.text_input(
-            "Dataset configuration (optional)", key="source-hf-config"
-        )
-        split = st.sidebar.text_input(
-            "Dataset split", value="train", key="source-hf-split"
-        )
-        revision = st.sidebar.text_input(
-            "Revision (recommended)",
-            placeholder="commit, tag, or branch",
-            key="source-hf-revision",
-        )
-        signature = (dataset_id.strip(), config.strip(), split.strip(), revision.strip(), schema)
-        if st.sidebar.button("Load Hugging Face source", type="primary"):
-            try:
-                spec = huggingface_source_spec(
-                    dataset_id,
-                    schema=schema,
-                    config=config,
-                    split=split,
-                    revision=revision,
-                )
-            except ValueError as error:
-                st.sidebar.error(str(error))
-            else:
-                st.session_state[state_key] = {"signature": signature, "spec": spec}
-        saved = st.session_state.get(state_key, {})
-        return saved.get("spec") if saved.get("signature") == signature else None
 
     if source_type == "Kaggle":
         st.sidebar.caption(
@@ -287,47 +251,69 @@ def run_app() -> None:
         "or compare report-only overlap across catalog datasets."
     )
 
+    report_path = os.getenv("DATASET_INSPECTION_REPORT", "")
+    embedding_root = os.getenv("DATASET_EMBEDDING_RUNS", "")
+    view = st.sidebar.radio(
+        "View", ("Dataset explorer", "Script results", "Embedding results"),
+        index=2 if embedding_root else (1 if report_path or os.getenv("DATASET_INSPECTION_HISTORY") else 0),
+    )
+    if view == "Embedding results":
+        render_semantic_results(st, default_root=embedding_root or "artifacts/dataset_embeddings")
+        return
+    if view == "Script results":
+        render_script_results(st, default_path=report_path)
+        return
+
     @st.cache_data(show_spinner=False)
     def cached_inventory(
         signatures: tuple[tuple[str, int, int], ...],
     ) -> dict[str, Any]:
         return inspect_dataset(signatures)
 
+    @st.cache_data(show_spinner=False, ttl=600)
+    def cached_hf_catalog(dataset_id, revision, credential_fingerprint, _token):
+        return discover_huggingface_dataset(dataset_id, revision=revision, token=_token or None)
+
+    @st.cache_data(show_spinner=False)
+    def cached_hf_configuration(catalog, config, credential_fingerprint, _token):
+        return inspect_huggingface_configuration(catalog, config, token=_token or None)
+
     @st.cache_data(show_spinner=False)
     def cached_huggingface_inventory(
-        dataset_id: str,
-        config: str | None,
-        split: str,
-        revision: str | None,
-        filter_column: str | None,
-        filter_value: str | None,
-        credential_fingerprint: str,
-        _token: str,
-    ) -> dict[str, Any]:
-        del credential_fingerprint
-        return inspect_huggingface_dataset(
-            dataset_id,
-            split,
-            config=config,
-            revision=revision,
-            token=_token or None,
-            filter_column=filter_column,
-            filter_value=filter_value,
+        configuration, split, shards, filter_column, filter_value,
+        credential_fingerprint, _token,
+    ):
+        return inspect_huggingface_selection(
+            configuration, split, shards=shards, token=_token or None,
+            filter_column=filter_column, filter_value=filter_value,
         )
+
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+    credential_key = secret_fingerprint(hf_token)
+
+    def hf_catalog_loader(dataset_id, revision):
+        return cached_hf_catalog(dataset_id, revision, credential_key, hf_token)
+
+    def hf_configuration_loader(catalog, config):
+        return cached_hf_configuration(catalog, config, credential_key, hf_token)
 
     @st.cache_data(show_spinner=False)
     def cached_kaggle_inventory(
         dataset_id: str,
         dataset_file: str,
     ) -> dict[str, Any]:
-        return inspect_kaggle_workbook(dataset_id, dataset_file)
+        inventory = inspect_kaggle_workbook(dataset_id, dataset_file)
+        inventory["file_formats"] = describe_dataset_formats([{"path": inventory["path"], "bytes": inventory["bytes"]}])
+        return inventory
 
     @st.cache_data(show_spinner=False)
     def cached_kaggle_text_inventory(
         dataset_id: str,
         dataset_file: str,
     ) -> dict[str, Any]:
-        return inspect_kaggle_text(dataset_id, dataset_file)
+        inventory = inspect_kaggle_text(dataset_id, dataset_file)
+        inventory["file_formats"] = describe_dataset_formats([{"path": inventory["path"], "bytes": inventory["bytes"]}])
+        return inventory
 
     @st.cache_data(show_spinner=False)
     def cached_sample(
@@ -372,8 +358,19 @@ def run_app() -> None:
     catalog_specs = [*pipeline_specs, *external_specs]
 
     spec: DatasetSpec | None = None
+    hf_configuration = None
     if source_type != "Local":
-        spec = _render_remote_source(st, source_type)
+        schema = st.sidebar.selectbox(
+            "Standard dataset schema", STANDARD_TRAINING_SCHEMAS,
+            format_func=lambda item: item.label, key=f"source-schema:{source_type}",
+        ).key
+        if source_type == "Hugging Face":
+            spec, hf_configuration = render_huggingface_source(
+                st, schema, catalog_loader=hf_catalog_loader,
+                configuration_loader=hf_configuration_loader,
+            )
+        else:
+            spec = _render_remote_source(st, source_type, schema)
     elif use_custom:
         custom_path_text = source_settings.text_input("Parquet file or directory")
         if custom_path_text:
@@ -465,6 +462,18 @@ def run_app() -> None:
         st.info("Select a valid dataset to begin.")
         st.stop()
 
+    if spec.format == "huggingface" and hf_configuration is None:
+        try:
+            catalog = hf_catalog_loader(spec.dataset_id, spec.dataset_revision)
+            spec, hf_configuration = render_huggingface_selection(
+                st, spec, catalog, configuration_loader=hf_configuration_loader,
+            )
+        except (ValueError, OSError, ImportError) as error:
+            st.error(f"Could not discover dataset selections: {error}")
+            st.stop()
+        if spec is None:
+            st.stop()
+
     heading = (
         f"{PIPELINE_STAGE_LABELS[spec.stage]} · {spec.label}"
         if spec.stage in PIPELINE_STAGE_LABELS
@@ -506,10 +515,9 @@ def run_app() -> None:
             if spec.format == "huggingface":
                 hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
                 inventory = cached_huggingface_inventory(
-                    spec.dataset_id or "",
-                    spec.dataset_config,
+                    hf_configuration,
                     spec.dataset_split or "train",
-                    spec.dataset_revision,
+                    spec.dataset_shards,
                     spec.filter_column,
                     spec.filter_value,
                     secret_fingerprint(hf_token),
@@ -549,23 +557,23 @@ def run_app() -> None:
         taxonomy_parts.append(f"**Adapted by:** {', '.join(spec.adapted_by)}")
     st.markdown(" · ".join(taxonomy_parts))
     metric_columns = st.columns(5)
-    metric_columns[0].metric("Rows", f"{inventory['rows']:,}")
+    metric_columns[0].metric("Rows", f"{inventory['rows']:,}" if inventory.get("rows") is not None else "Unknown")
     if inventory["format"] == "huggingface":
         metric_columns[1].metric("Remote shards", f"{inventory['files']:,}")
         metric_columns[2].metric("Columns", f"{len(inventory['columns']):,}")
         hub_file_bytes = inventory.get("hub_file_bytes")
         metric_columns[3].metric(
-            "Hub file size",
+            "Selected file size",
             (
                 format_decimal_bytes(hub_file_bytes)
                 if hub_file_bytes is not None
                 else "Unknown"
             ),
-            help="Compressed source files stored/downloaded from Hugging Face.",
+            help="Physical source-file bytes for exactly this configuration, split, and shard selection.",
         )
         metric_columns[4].metric(
             "Estimated memory size",
-            format_bytes(inventory["memory_bytes"]),
+            format_bytes(inventory["memory_bytes"]) if inventory.get("memory_bytes") is not None else "Unknown",
             help=(
                 "Decoded Arrow data size for the selected split; this is not "
                 "the download or disk size."
@@ -602,6 +610,17 @@ def run_app() -> None:
             format_bytes(inventory["bytes"]),
         )
 
+    if inventory["format"] == "huggingface":
+        st.caption(
+            f"Selection: {inventory['dataset_config']} / {inventory['dataset_split']} · "
+            f"{inventory['files']} of {inventory['total_split_shards']} shards · "
+            f"size evidence: {inventory['size_metadata_source']}."
+        )
+        if inventory.get("rows") is None:
+            st.info("Row count is unavailable for these files. Source sampling and language/script inspection remain available; percentage-based WORKSPACE sampling requires a known population. Parquet shards provide counts from their metadata.")
+    render_file_formats(st, inventory.get("file_formats"))
+    render_language_status(st, inventory=inventory, spec=spec)
+
     size_bucket = dataset_size_bucket(inventory)
     st.caption(
         f"Size bucket: **{size_bucket.label}** ({size_bucket.size_basis})."
@@ -626,15 +645,17 @@ def run_app() -> None:
             return inventory
         if selected_spec.format == "huggingface":
             selected_hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
+            selected_catalog = hf_catalog_loader(selected_spec.dataset_id, selected_spec.dataset_revision)
+            selected_config = selected_spec.dataset_config
+            if selected_config is None:
+                if len(selected_catalog["configs"]) != 1:
+                    raise ValueError("Choose a dataset configuration before comparing this source.")
+                selected_config = selected_catalog["configs"][0]
+            configuration = hf_configuration_loader(selected_catalog, selected_config)
             return cached_huggingface_inventory(
-                selected_spec.dataset_id or "",
-                selected_spec.dataset_config,
-                selected_spec.dataset_split or "train",
-                selected_spec.dataset_revision,
-                selected_spec.filter_column,
-                selected_spec.filter_value,
-                secret_fingerprint(selected_hf_token),
-                selected_hf_token,
+                configuration, selected_spec.dataset_split or "train", selected_spec.dataset_shards,
+                selected_spec.filter_column, selected_spec.filter_value,
+                secret_fingerprint(selected_hf_token), selected_hf_token,
             )
         if selected_spec.format == "kaggle":
             return cached_kaggle_inventory(
@@ -653,7 +674,10 @@ def run_app() -> None:
         ["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]
     )
     with workspace_tab:
-        render_workspace_tab(st=st, inventory=inventory, spec=spec)
+        if inventory.get("rows") is not None:
+            render_workspace_tab(st=st, inventory=inventory, spec=spec)
+        else:
+            st.info("WORKSPACE needs a known row count. Select a complete split with row metadata or Parquet shards.")
 
     with overlap_tab:
         render_overlap_tab(

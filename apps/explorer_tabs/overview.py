@@ -9,7 +9,7 @@ from .common import VIEWER_PREFIX, default_columns, preview_records, render_full
 def render_details_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> None:
     st.dataframe(inventory["schema"], width="stretch", hide_index=True)
     with st.expander("Dataset files"):
-        displayed_files = "\n".join(str(path) for path in spec.files)
+        displayed_files = "\n".join(str(path) for path in (spec.dataset_shards or spec.files))
         st.code(displayed_files or str(spec.location), language=None)
 
 def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any, cached_sample: Any) -> int:

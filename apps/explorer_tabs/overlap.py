@@ -124,7 +124,8 @@ def render_overlap_tab(
                 field = candidates[0]
                 rows = cached_sample(
                     inventory,
-                    min(int(sample_size), int(inventory["rows"])),
+                    min(int(sample_size), int(inventory["rows"]))
+                    if inventory.get("rows") is not None else int(sample_size),
                     int(seed),
                     (field,),
                 )

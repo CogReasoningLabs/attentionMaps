@@ -279,6 +279,30 @@ Notebooks:
 
 ## Path 1 detailed guide — Dataset exploration application
 
+Configure dataset inspection and optional Devanagari filtering in
+[`configs/datasets/dataset.yaml`](configs/datasets/dataset.yaml)
+for Hugging Face, Kaggle, or local files, then run [`scripts/inspect_dataset.py`](docs/scripts/inspect-dataset.md).
+Streamlit's **Script results** view displays saved language and Nepali-script
+category percentages by sampled record, alongside vote summaries, sizes, file
+extensions, batch parsing requirements, and optional filter counts. By default
+it draws five independent 20% random samples, votes on the summary labels, and
+counts overlapping records once in the reported category proportions. Configure
+`sample_fraction`, `sampling_runs`, and `seed` in the script settings.
+The shared YAML enables a local fastText language fallback when records have no
+language column and no explicit HF language partition. Predictions use the same
+classification/voting thresholds, and their origin and rejection counts are
+saved in the CSV and displayed in Streamlit.
+Use `--formats-only` to catalog formats without parsing records.
+For pretrained corpus embeddings, pair similarity, 3D clustering, and B1–B3
+sampling, use [`scripts/cluster_dataset.py`](docs/scripts/cluster-dataset.md).
+All models share [`configs/embeddings.yaml`](configs/embeddings.yaml):
+`venv/bin/python scripts/cluster_dataset.py run --settings configs/embeddings.yaml`.
+It supports NepaliBERT, original NepBERTa, and EmbeddingGemma; the read-only
+**Embedding results** view explores saved runs.
+The separate **Dataset explorer** view offers Hugging Face
+configuration, split, and individual-shard selection with matching size statistics.
+
+
 Inspect raw, cleaned, processed, or tokenized Parquet records without loading a
 whole dataset into memory:
 

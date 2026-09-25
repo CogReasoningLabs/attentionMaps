@@ -700,6 +700,14 @@ class DatasetDisplayTests(unittest.TestCase):
 
 
 class DatasetExplorerAppTests(unittest.TestCase):
+    def setUp(self):
+        # UI fixtures must not discover/download real catalog datasets on startup.
+        for name in ("discover_datasets", "himalaya_ai_dataset_specs", "aya_nepali_dataset_specs",
+                     "iriis_nepali_text_corpus_specs", "kaggle_dataset_specs"):
+            fixture = patch(f"attention_maps.explorer.{name}", return_value=[])
+            fixture.start()
+            self.addCleanup(fixture.stop)
+
     def test_ui_accepts_five_identifier_driven_source_types(self):
         try:
             from streamlit.testing.v1 import AppTest
@@ -719,8 +727,8 @@ class DatasetExplorerAppTests(unittest.TestCase):
         source.set_value("Hugging Face").run(timeout=30)
         labels = {item.label for item in app.text_input}
         self.assertIn("Hugging Face dataset ID", labels)
-        self.assertIn("Dataset configuration (optional)", labels)
-        self.assertIn("Dataset split", labels)
+        self.assertIn("Load Hugging Face source", {item.label for item in app.button})
+        # Configuration/split dropdowns are populated after metadata discovery.
         self.assertIn("Revision (recommended)", labels)
         self.assertFalse(app.exception)
 

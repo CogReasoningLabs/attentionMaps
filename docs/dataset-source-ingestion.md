@@ -38,7 +38,9 @@ cache. Cached source material is excluded from Git.
 3. Select one of the four standard training-data schemas. This preserves the
    correct atomic unit and restricts D2 to task-specific supervised datasets.
 4. Enter the provider's standard identifier and select **Load ... source**.
-5. For a staged folder or multi-file Kaggle dataset, select the dataset file.
+5. For Hugging Face, choose **Dataset configuration**, **Dataset split**, and
+   **All shards** or **Choose shards**. Sizes and samples follow this selection.
+   For a staged folder or multi-file Kaggle dataset, select the dataset file.
 6. Use **WORKSPACE** to sample, normalize, deduplicate, optionally prune, and
    generate EDA artifacts.
 
@@ -106,3 +108,33 @@ adapters.
 - Full-corpus batch preprocessing from Hugging Face, S3, and Kaggle remains a
   separate extension. This UI processes the selected bounded workspace sample
   while leaving the source immutable.
+
+## Language, script, and shard inspection
+
+The standalone `scripts/inspect_dataset.py` command supports both
+`--provider huggingface` and `--provider kaggle`. It discovers Hub configurations,
+splits/shards or versioned Kaggle files and produces the same language/script report.
+Kaggle `--list` and `--formats-only` use remote metadata; normal inspection caches
+only the selected `--dataset-file`. Its YAML/JSON
+settings file is the main input for repeatable runs, including optional whole-record
+Devanagari filtering. Default language/script analysis uses five independent
+20% random samples and strict-majority voting, with per-run evidence and measured
+unique coverage. Full streaming passes can still be required to draw those samples.
+Reports track each selected file's extension, compression,
+record format, and local batch reader requirements. `--formats-only` catalogs
+files without parsing records, including mixed and unsupported local formats. Streamlit's **Script results** view reads the saved report
+without executing processing or maintaining separate filter rules. The interactive
+explorer keeps configuration/split/shard selectors and displays a loaded report's
+language/script evidence only for a matching source selection.
+See [the inspector reference](scripts/inspect-dataset.md) for commands, settings,
+metadata scope, filter behavior, and sample limits.
+
+## Embedding-based corpus analysis
+
+`cluster_dataset.py run` reuses the same Hugging Face config/split/shards and
+Kaggle file selection, embeds every non-empty selected record, and clusters in
+the original vector space. `pair` reads any two saved vectors; `sample` exports
+B1 random, B2 density-weighted, or B3 SemDeDup selections with shared language
+evidence and voting. Streamlit’s **Embedding results** view only reads saved
+artifacts. See [the embedding guide](scripts/cluster-dataset.md) for model
+research, full-dataset commands, 3D visualization, and resource limits.
