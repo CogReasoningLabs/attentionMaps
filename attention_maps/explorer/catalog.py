@@ -313,6 +313,7 @@ class DatasetSpec:
     dataset_config: str | None = None
     dataset_split: str | None = None
     dataset_revision: str | None = None
+    dataset_shards: tuple[str, ...] | None = None
     dataset_file: str | None = None
     source_uri: str | None = None
     filter_column: str | None = None

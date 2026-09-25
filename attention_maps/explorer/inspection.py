@@ -22,6 +22,8 @@ from attention_maps.datasets.kaggle import (
 )
 
 from .catalog import VIEWER_PREFIX
+from .file_formats import describe_dataset_formats
+from .inspection_progress import inspection_progress
 
 
 HUGGINGFACE_DATASET_VIEWER_SIZE_URL = (
@@ -181,24 +183,29 @@ def inspect_json(
 
 
 def inspect_dataset(
-    signatures: tuple[tuple[str, int, int], ...],
+    signatures: tuple[tuple[str, int, int], ...], *, show_progress: bool = False,
 ) -> dict[str, Any]:
     """Inspect a supported dataset using its file extension."""
 
     suffixes = {Path(path_text).suffix.lower() for path_text, _, _ in signatures}
     if suffixes == {".parquet"}:
-        return inspect_parquet(signatures)
-    if suffixes == {".json"}:
-        return inspect_json(signatures)
-    if suffixes == {".csv"}:
-        return inspect_delimited(signatures, format_name="csv")
-    if suffixes <= {".jsonl", ".ndjson"} and suffixes:
-        return inspect_json_lines(signatures)
-    if suffixes == {".txt"}:
-        return inspect_text_lines(signatures)
-    if suffixes == {".xlsx"} and len(signatures) == 1:
-        return inspect_workbook_path(Path(signatures[0][0]))
-    raise ValueError(f"Unsupported or mixed dataset formats: {sorted(suffixes)}")
+        inventory = inspect_parquet(signatures)
+    elif suffixes == {".json"}:
+        inventory = inspect_json(signatures)
+    elif suffixes == {".csv"}:
+        inventory = inspect_delimited(signatures, format_name="csv", show_progress=show_progress)
+    elif suffixes <= {".jsonl", ".ndjson"} and suffixes:
+        inventory = inspect_json_lines(signatures, show_progress=show_progress)
+    elif suffixes == {".txt"}:
+        inventory = inspect_text_lines(signatures, show_progress=show_progress)
+    elif suffixes == {".xlsx"} and len(signatures) == 1:
+        inventory = inspect_workbook_path(Path(signatures[0][0]))
+    else:
+        raise ValueError(f"Unsupported or mixed dataset formats: {sorted(suffixes)}; use --formats-only to catalog extensions without parsing")
+    inventory["file_formats"] = describe_dataset_formats(
+        {"path": path, "bytes": size} for path, size, _ in signatures
+    )
+    return inventory
 
 
 def _merge_observed_schema(
@@ -223,7 +230,8 @@ def _merge_observed_schema(
 
 
 def inspect_delimited(
-    signatures: tuple[tuple[str, int, int], ...], *, format_name: str = "csv"
+    signatures: tuple[tuple[str, int, int], ...], *, format_name: str = "csv",
+    show_progress: bool = False,
 ) -> dict[str, Any]:
     """Scan CSV metadata with bounded schema inference memory."""
 
@@ -236,13 +244,15 @@ def inspect_delimited(
         columns = list(reader.fieldnames or [])
         rows = 0
         nullable = {column: False for column in columns}
-        for record in reader:
-            rows += 1
-            if len(examples) < 1_000:
-                examples.append(dict(record))
-            for column in columns:
-                if record.get(column) in (None, ""):
-                    nullable[column] = True
+        with inspection_progress("Read CSV", enabled=show_progress) as progress:
+            for record in reader:
+                rows += 1
+                if len(examples) < 1_000:
+                    examples.append(dict(record))
+                for column in columns:
+                    if record.get(column) in (None, ""):
+                        nullable[column] = True
+                progress.update(1)
     return {
         "format": format_name,
         "path": path_text,
@@ -260,7 +270,7 @@ def inspect_delimited(
 
 
 def inspect_json_lines(
-    signatures: tuple[tuple[str, int, int], ...],
+    signatures: tuple[tuple[str, int, int], ...], *, show_progress: bool = False,
 ) -> dict[str, Any]:
     """Scan JSONL/NDJSON metadata without retaining the corpus."""
 
@@ -269,7 +279,8 @@ def inspect_json_lines(
     path_text, size, _ = signatures[0]
     examples: list[dict[str, Any]] = []
     rows = 0
-    with Path(path_text).open("r", encoding="utf-8-sig") as stream:
+    with Path(path_text).open("r", encoding="utf-8-sig") as stream, \
+         inspection_progress("Read JSONL", enabled=show_progress) as progress:
         for line in stream:
             if not line.strip():
                 continue
@@ -278,6 +289,7 @@ def inspect_json_lines(
             rows += 1
             if len(examples) < 1_000:
                 examples.append(record)
+            progress.update(1)
     columns, schema = _merge_observed_schema(examples)
     return {
         "format": "jsonl",
@@ -293,15 +305,19 @@ def inspect_json_lines(
 
 
 def inspect_text_lines(
-    signatures: tuple[tuple[str, int, int], ...],
+    signatures: tuple[tuple[str, int, int], ...], *, show_progress: bool = False,
 ) -> dict[str, Any]:
     """Count non-empty UTF-8 lines as individual text records."""
 
     if len(signatures) != 1:
         raise ValueError("Text explorer imports must select exactly one file")
     path_text, size, _ = signatures[0]
-    with Path(path_text).open("rb") as stream:
-        rows = sum(1 for line in stream if line.strip())
+    rows = 0
+    with Path(path_text).open("rb") as stream, \
+         inspection_progress("Read TXT", total=size, unit="B", enabled=show_progress) as progress:
+        for line in stream:
+            rows += bool(line.strip())
+            progress.update(len(line))
     return {
         "format": "text",
         "path": path_text,
@@ -697,6 +713,13 @@ def sample_huggingface_rows(
         raise ValueError(f"Unknown Hugging Face columns: {sorted(invalid)}")
     if sample_size <= 0:
         return []
+    data_options = (
+        {"data_files": {inventory["dataset_split"]: list(inventory["dataset_shards"])}}
+        if inventory.get("dataset_shards") is not None
+        else {}
+    )
+    if inventory.get("dataset_shards") is not None and not inventory["dataset_shards"]:
+        raise ValueError("Select at least one Hugging Face shard")
     if inventory.get("filter_column") and inventory.get("filter_value"):
         try:
             from datasets import load_dataset
@@ -708,6 +731,7 @@ def sample_huggingface_rows(
                 streaming=True,
                 revision=inventory.get("dataset_revision"),
                 token=token or None,
+                **data_options,
                 filters=[
                     (
                         inventory["filter_column"],
@@ -756,6 +780,7 @@ def sample_huggingface_rows(
             streaming=True,
             revision=inventory.get("dataset_revision"),
             token=token or None,
+            **data_options,
         )
         stream = stream.shuffle(
             seed=seed,

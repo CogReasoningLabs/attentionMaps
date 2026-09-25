@@ -1,0 +1,58 @@
+# Run: venv/bin/python scripts/inspect_dataset.py --settings configs/datasets/dataset.yaml
+# Paths are relative to this file; CLI flags override YAML.
+
+# Source
+provider: local                 # huggingface | kaggle
+dataset: null
+
+# Hugging Face only (null for other sources)
+# revision: null
+# config: default
+# split: train
+# shards: null                     # null = all shards in the selected split.
+
+# Kaggle only (null for other sources)
+# dataset_file: ne_dedup.txt
+
+# Local source (set dataset and provider-specific fields to null)
+local: /home/olive/attentionMaps/ne.txt
+
+# Shared selection — applied before sampling
+text_columns: null               # null = auto-detect.
+# row_filters: {language_code: [npi]} # Select Aya Nepali rows before sampling.
+# row_filters: {language_code: [text]}
+formats_only: false              # Metadata only; requires empty row_filters.
+
+# Sampling within the selected portion
+sampling_method: random
+sample_fraction: 0.2
+sampling_runs: 5
+concurrency: 6
+batch_size: 1024
+seed: 42
+
+# Local text-language fallback when column/HF language evidence is absent
+language_detection: fasttext     # none | fasttext
+language_detection_model: ../../artifacts/language_models/lid.176.bin
+language_detection_min_confidence: 0.60
+language_detection_min_letters: 5
+language_detection_max_characters: 4000 # Model input per record; script analysis still uses full text.
+
+# Language thresholds — fractions of records with metadata or accepted predictions
+language_min_ratio: 0.05
+language_dominance_ratio: 0.95
+language_min_labelled_ratio: 0.80 # Minimum fraction with metadata labels or accepted predictions.
+
+# Script thresholds — fractions of eligible letters/marks
+script_dominance_ratio: 0.90     # Denominator: Devanagari + Latin.
+script_max_other_ratio: 0.05     # Denominator: all scripts.
+vote_min_agreement: 0.60         # 3/5 votes; strict majority also required.
+
+# Shared report
+output: ../../artifacts/dataset_inspection/history.csv
+
+# Optional Devanagari export — enable both fields together
+# min_devanagari_ratio: 0.8
+# filtered_output: ../../artifacts/dataset_inspection/devanagari.jsonl
+# max_records: 10000
+# overwrite: false

@@ -1,0 +1,288 @@
+"""Revision-aware configuration, split, and physical-shard inspection."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import urllib.request
+import urllib.parse
+from dataclasses import replace
+from pathlib import PurePosixPath
+from typing import Any, Sequence
+from urllib.parse import unquote, urlparse
+
+from .catalog import DatasetSpec
+from .file_formats import describe_dataset_formats
+from .source_imports import normalize_huggingface_id
+
+
+def discover_huggingface_dataset(
+    dataset_id: str, *, revision: str | None = None, token: str | None = None
+) -> dict[str, Any]:
+    """Discover configurations and file sizes without downloading the corpus."""
+
+    from datasets import get_dataset_config_names
+    from huggingface_hub import HfApi
+
+    dataset_id = normalize_huggingface_id(dataset_id)
+    try:
+        info = HfApi(token=token).dataset_info(
+            dataset_id, revision=revision or "main", files_metadata=True
+        )
+        resolved_revision = info.sha
+        configs = get_dataset_config_names(
+            dataset_id, revision=resolved_revision, token=token
+        )
+    except Exception as error:
+        raise ValueError(f"Could not discover Hugging Face dataset: {error}") from error
+    card = info.card_data.to_dict() if info.card_data else {}
+    languages = card.get("language") or []
+    if isinstance(languages, str):
+        languages = [languages]
+    return {
+        "dataset_id": dataset_id,
+        "requested_revision": revision or "main",
+        "revision": resolved_revision,
+        "configs": list(configs),
+        "languages": languages,
+        "file_sizes": {item.rfilename: item.size for item in info.siblings or []},
+    }
+
+
+def _repository_path(url: str, dataset_id: str) -> str | None:
+    prefix = f"hf://datasets/{dataset_id}"
+    if url.startswith(prefix + "@"):
+        return url[len(prefix) + 1:].split("/", 1)[1]
+    if url.startswith(prefix + "/"):
+        return url[len(prefix) + 1:]
+    parsed = urlparse(url)
+    prefix = f"/datasets/{dataset_id}/resolve/"
+    if parsed.netloc == "huggingface.co" and parsed.path.startswith(prefix):
+        parts = parsed.path[len(prefix):].split("/", 1)
+        return unquote(parts[1]) if len(parts) == 2 else None
+    return None
+
+
+def inspect_huggingface_configuration(
+    catalog: dict[str, Any], config: str, *, token: str | None = None
+) -> dict[str, Any]:
+    """Resolve the actual files belonging to every split of one configuration."""
+
+    from datasets import load_dataset_builder
+
+    if config not in catalog["configs"]:
+        raise ValueError(f"Unknown dataset configuration: {config}")
+    try:
+        builder = load_dataset_builder(
+            catalog["dataset_id"], name=config, revision=catalog["revision"], token=token
+        )
+    except Exception as error:
+        raise ValueError(f"Could not inspect configuration {config!r}: {error}") from error
+    splits = {}
+    for split, paths in (builder.config.data_files or {}).items():
+        info = (builder.info.splits or {}).get(split)
+        shards = []
+        for path in dict.fromkeys(map(str, paths)):
+            relative = _repository_path(path, catalog["dataset_id"])
+            shards.append({
+                "path": path,
+                "name": relative or path,
+                "bytes": catalog["file_sizes"].get(relative),
+            })
+        splits[str(split)] = {
+            "rows": getattr(info, "num_examples", None),
+            "memory_bytes": getattr(info, "num_bytes", None),
+            "shards": shards,
+            "file_formats": describe_dataset_formats(shards),
+        }
+    if not splits:
+        raise ValueError("This configuration exposes no selectable data files/splits.")
+    features = builder.info.features or {}
+    return {
+        "dataset_id": catalog["dataset_id"],
+        "revision": catalog["revision"],
+        "config": config,
+        "languages": catalog.get("languages", []),
+        "splits": splits,
+        "schema": [
+            {"column": name, "type": str(feature), "nullable": "unknown"}
+            for name, feature in features.items()
+        ],
+    }
+
+
+def select_huggingface_shards(
+    configuration: dict[str, Any], split: str, shards: Sequence[str] | None = None
+) -> list[dict[str, Any]]:
+    if split not in configuration["splits"]:
+        raise ValueError(f"Unknown split {split!r} for {configuration['config']!r}")
+    available = configuration["splits"][split]["shards"]
+    if shards is None:
+        return list(available)
+    requested = set(shards)
+    unknown = requested - {item["path"] for item in available}
+    if unknown:
+        raise ValueError(f"Shards do not belong to this configuration/split: {sorted(unknown)}")
+    if not requested:
+        raise ValueError("Select at least one shard.")
+    return [item for item in available if item["path"] in requested]
+
+
+def selected_source_spec(
+    spec: DatasetSpec, configuration: dict[str, Any], split: str,
+    shards: Sequence[str] | None = None,
+) -> DatasetSpec:
+    """Include every selection dimension in workspace/cache identity."""
+
+    selected = select_huggingface_shards(configuration, split, shards)
+    identity = {
+        "dataset": configuration["dataset_id"], "config": configuration["config"],
+        "split": split, "revision": configuration["revision"],
+        "shards": [item["path"] for item in selected],
+        "filter": [spec.filter_column, spec.filter_value],
+    }
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+    return replace(
+        spec, key=f"{spec.key}:selection:{digest}",
+        label=f"{configuration['dataset_id']} · {configuration['config']} · {split}",
+        dataset_config=configuration["config"], dataset_split=split,
+        dataset_revision=configuration["revision"],
+        dataset_shards=tuple(item["path"] for item in selected),
+    )
+
+
+def _parquet_metadata(path: str, *, token: str | None) -> dict[str, Any]:
+    """Read range-addressed Parquet footers, never materialize the data table."""
+
+    import fsspec
+    import pyarrow.parquet as pq
+
+    options = {"token": token} if path.startswith("hf://") else {}
+    if path.startswith("https://huggingface.co/") and token:
+        options = {"headers": {"Authorization": f"Bearer {token}"}}
+    filesystem, remote_path = fsspec.core.url_to_fs(path, **options)
+    with filesystem.open(remote_path, "rb", block_size=64 * 1024) as stream:
+        parquet = pq.ParquetFile(stream)
+        metadata = parquet.metadata
+        return {
+            "rows": metadata.num_rows,
+            "memory_bytes": sum(metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups)),
+            "schema": [
+                {"column": field.name, "type": str(field.type), "nullable": str(field.nullable)}
+                for field in parquet.schema_arrow
+            ],
+        }
+
+
+def _viewer_split_metadata(configuration: dict, split: str, token: str | None) -> dict | None:
+    """Use cached Viewer counts only when its revision matches the selected commit."""
+
+    url = "https://datasets-server.huggingface.co/size?" + urllib.parse.urlencode(
+        {"dataset": configuration["dataset_id"]}
+    )
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
+            if response.headers.get("X-Revision") != configuration["revision"]:
+                return None
+            payload = json.load(response)
+    except (OSError, ValueError):
+        return None
+    if payload.get("partial") or payload.get("pending") or payload.get("failed"):
+        return None
+    matches = [item for item in payload.get("size", {}).get("splits", [])
+               if item.get("config") == configuration["config"] and item.get("split") == split]
+    return matches[0] if len(matches) == 1 else None
+
+
+def inspect_huggingface_selection(
+    configuration: dict[str, Any], split: str, *,
+    shards: Sequence[str] | None = None, token: str | None = None,
+    filter_column: str | None = None, filter_value: str | None = None,
+    metadata_only: bool = False,
+) -> dict[str, Any]:
+    """Return inventory for precisely the selected physical files."""
+
+    selected = select_huggingface_shards(configuration, split, shards)
+    split_info = configuration["splits"][split]
+    whole_split = len(selected) == len(split_info["shards"])
+    rows = split_info["rows"] if whole_split else None
+    memory = split_info["memory_bytes"] if whole_split else None
+    schema = configuration["schema"]
+    source = "split metadata"
+    variants = 1
+    parquet_only = all(PurePosixPath(urlparse(item["path"]).path).suffix.lower() == ".parquet" for item in selected)
+    if not metadata_only and whole_split and rows is None and not parquet_only:
+        viewer = _viewer_split_metadata(configuration, split, token)
+        if viewer is not None and viewer.get("num_rows") is not None:
+            rows = int(viewer["num_rows"])
+            memory = viewer.get("num_bytes_memory")
+            source = "Dataset Viewer (matching revision and split)"
+    if not metadata_only and (rows is None or not schema):
+        if parquet_only:
+            metadata = [_parquet_metadata(item["path"], token=token) for item in selected]
+            rows = sum(item["rows"] for item in metadata)
+            memory = sum(item["memory_bytes"] for item in metadata)
+            schemas = [item["schema"] for item in metadata]
+            common = set.intersection(*(set(field["column"] for field in value) for value in schemas))
+            schema = [field for field in schemas[0] if field["column"] in common]
+            variants = len({json.dumps(value, sort_keys=True) for value in schemas})
+            source = "Parquet footers (selected shards)"
+        elif not schema:
+            from datasets import load_dataset
+
+            stream = load_dataset(
+                configuration["dataset_id"], configuration["config"], split=split,
+                revision=configuration["revision"], streaming=True, token=token,
+                data_files={split: [item["path"] for item in selected]},
+            )
+            # Resolving features reads a bounded first batch, not the whole split.
+            features = stream.features
+            if not features:
+                first = next(iter(stream), {})
+                from .inspection import _json_value_type
+
+                schema = [{"column": name, "type": _json_value_type(value), "nullable": "unknown"}
+                          for name, value in first.items()]
+            else:
+                schema = [{"column": name, "type": str(value), "nullable": "unknown"}
+                          for name, value in features.items()]
+    sizes = [item["bytes"] for item in selected]
+    storage = sum(sizes) if all(size is not None for size in sizes) else None
+    inventory = {
+        "format": "huggingface", "provider": "huggingface", "dataset_id": configuration["dataset_id"],
+        "dataset_config": configuration["config"], "dataset_split": split,
+        "dataset_revision": configuration["revision"],
+        "dataset_shards": [item["path"] for item in selected],
+        "file_formats": describe_dataset_formats(selected), "metadata_only": metadata_only,
+        "shards": selected, "total_split_shards": len(split_info["shards"]),
+        "selection_scope": "split" if whole_split else "selected shards",
+        "rows": rows, "files": len(selected), "bytes": storage,
+        "hub_file_bytes": storage, "memory_bytes": memory,
+        "memory_bytes_estimated": source.startswith("Parquet"),
+        "streaming": True, "row_groups": [], "schema": schema,
+        "columns": [field["column"] for field in schema], "schema_variants": variants,
+        "size_metadata_source": source, "declared_languages": configuration.get("languages", []),
+    }
+    if bool(filter_column) != bool(filter_value):
+        raise ValueError("A Hugging Face filter requires both a column and value")
+    if filter_column and metadata_only:
+        raise ValueError("Metadata-only inspection cannot count filtered records")
+    if filter_column:
+        from datasets import load_dataset
+
+        stream = load_dataset(
+            configuration["dataset_id"], configuration["config"], split=split,
+            revision=configuration["revision"], streaming=True, token=token,
+            data_files={split: inventory["dataset_shards"]},
+            filters=[(filter_column, "==", filter_value)],
+        )
+        count = sum(record.get(filter_column) == filter_value for record in stream)
+        inventory.update(
+            source_rows=rows, rows=count, filter_column=filter_column, filter_value=filter_value,
+            memory_bytes=round(memory * count / rows) if memory is not None and rows else None,
+            memory_bytes_estimated=True,
+        )
+    return inventory

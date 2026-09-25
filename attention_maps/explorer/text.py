@@ -14,6 +14,8 @@ from attention_maps.eda.contracts import DatasetSpec as EDADatasetSpec
 from attention_maps.eda.text import clean_devanagari_text, strip_nepali_suffix
 from attention_maps.inference.comparison import ComparisonConfigurationError
 
+from .language_status import LANGUAGE_FIELDS
+
 from .catalog import (
     DEVANAGARI_FONT_CANDIDATES,
     LATIN_FONT_CANDIDATES,
@@ -100,6 +102,7 @@ def text_columns(schema: Sequence[dict[str, str]]) -> list[str]:
         "language",
         "language_code",
     }
+    metadata_names.update(LANGUAGE_FIELDS)
     other_strings = [
         column
         for column in string_columns
@@ -263,6 +266,7 @@ def eda_dataset_spec(
         dataset_id=spec.dataset_id or f"local/{key}",
         config_name=spec.dataset_config,
         split=spec.dataset_split or "local",
+        revision=spec.dataset_revision,
         text_columns=tuple(text_fields),
         source_columns=tuple(source_fields),
         sample_size=sample_size,
