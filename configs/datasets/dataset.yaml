@@ -2,25 +2,36 @@
 # Paths are relative to this file; CLI flags override YAML.
 
 # Source
-provider: local                 # huggingface | kaggle
-dataset: null
+provider: huggingface                      # huggingface | kaggle | local
+dataset: FredZhang7/toxi-text-3M
 
-# Hugging Face only (null for other sources)
-# revision: null
-# config: default
-# split: train
-# shards: null                     # null = all shards in the selected split.
+# Hugging Face only
+revision: null
+config: default
+split: train
+shards: null
 
-# Kaggle only (null for other sources)
-# dataset_file: ne_dedup.txt
+# Kaggle only
+dataset_file: null
 
-# Local source (set dataset and provider-specific fields to null)
-local: /home/olive/attentionMaps/ne.txt
+# Local source
+local: null
+
+# Atomic dataset instance; set for each dataset before inspection.
+training_schema: task_specific_supervised
+invalid_instance_policy: error
+text_record_unit: line          # TXT only: line | blank_line
+field_mapping:
+  text: text
+  label: is_toxic
+field_parsers: {}
+task_name: toxicity_classification
+
+row_filters:
+  lang: [ne]
 
 # Shared selection — applied before sampling
-text_columns: null               # null = auto-detect.
-# row_filters: {language_code: [npi]} # Select Aya Nepali rows before sampling.
-# row_filters: {language_code: [text]}
+text_columns: [text]
 formats_only: false              # Metadata only; requires empty row_filters.
 
 # Sampling within the selected portion
@@ -35,7 +46,7 @@ seed: 42
 language_detection: fasttext     # none | fasttext
 language_detection_model: ../../artifacts/language_models/lid.176.bin
 language_detection_min_confidence: 0.60
-language_detection_min_letters: 5
+language_detection_min_letters: 2
 language_detection_max_characters: 4000 # Model input per record; script analysis still uses full text.
 
 # Language thresholds — fractions of records with metadata or accepted predictions

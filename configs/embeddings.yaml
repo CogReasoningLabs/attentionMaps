@@ -4,12 +4,12 @@
 
 # 1. Choose the DATASOURCE provider first (independent of the embedding model).
 # Remote sources require an explicit provider; they are never guessed.
-provider: kaggle                # huggingface | kaggle
+provider: huggingface                # huggingface | kaggle
 
 # Kaggle uses dataset + dataset_file.
 # Hugging Face uses dataset + revision/config/split/shards; set dataset_file: null.
-dataset: hsebarp/oscar-corpus-nepali
-dataset_file: ne_dedup.txt       # Kaggle file; set null for Hugging Face.
+dataset: Aananda-giri/gorkhapatra-nepali-epaper
+dataset_file: null             # Kaggle file; set null for Hugging Face.
 revision: null                  # Hugging Face dataset revision.
 config: null                    # Hugging Face dataset configuration, e.g. ne.
 split: null                     # Hugging Face split, e.g. train.
@@ -17,9 +17,10 @@ shards: null                    # Hugging Face: null = all selected split's shar
 local: null                    # To use local data, set this and set dataset to null.
 
 # 1a. Define one complete data instance using the project's canonical schemas.
-training_schema: pretraining    # auto | pretraining | instruction_finetuning | task_specific_supervised | preference_tuning
+training_schema: pretraining    # auto | pretraining | instruction_finetuning | task_specific_supervised | preference_tuning | evaluation
 text_record_unit: line          # TXT: line or blank_line (requires actual blank-line document boundaries).
 field_mapping: {}               # Canonical -> source path, e.g. {text: body, label: category}.
+field_parsers: {}                # e.g. {text: join_strings} for a list-of-strings column.
 task_name: null                 # Supervised task name when the source has no task column.
 text_columns: [text]            # Document/supervised input fields; conversations/preferences use all schema fields.
 languages: [ne]                 # Explicit declaration, not an embedding-based detection.
