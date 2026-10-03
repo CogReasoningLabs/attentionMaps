@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from attention_maps.explorer.inspection_history import append_history, consolidate_inspection_reports, decision_text, load_history_report, read_history, LEGACY_FIELDS, PRE_PROPORTION_FIELDS
+from attention_maps.explorer.inspection_history import append_history, consolidate_inspection_reports, decision_text, load_history_report, read_history, LEGACY_FIELDS, PRE_PROPORTION_FIELDS, PRE_TIMING_FIELDS, PRE_INSTANCE_FIELDS
 from attention_maps.explorer.sampling_vote import majority_vote
 from scripts.inspect_dataset import main, _arguments
 
@@ -50,6 +50,50 @@ class InspectionHistoryTests(unittest.TestCase):
             self.assertIn("at least 3", row["Script decision"])
         self.assertEqual(rows[0]["Dataset"], rows[2]["Dataset"])
         self.assertNotEqual(rows[0]["Seed"], rows[2]["Seed"])
+        for row, report in zip(rows, reports):
+            self.assertEqual(row["Started at"], report["started_at"])
+            self.assertEqual(float(row["Processing seconds"]), report["processing_seconds"])
+            self.assertGreaterEqual(report["processing_seconds"], 0)
+            self.assertLessEqual(report["started_at"], report["created_at"])
+
+    def test_old_csv_header_gains_blank_timing_cells_without_losing_reports(self):
+        self.assertEqual(self.inspect("prior")[0], 0)
+        original = read_history(self.sheet)[0]
+        with self.sheet.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=PRE_TIMING_FIELDS)
+            writer.writeheader()
+            writer.writerow({name: original[name] for name in PRE_TIMING_FIELDS})
+        self.assertEqual(self.inspect("new")[0], 0)
+        rows = read_history(self.sheet)
+        self.assertEqual(rows[0]["Report JSON"], original["Report JSON"])
+        self.assertEqual(rows[0]["Processing seconds"], "")
+        self.assertEqual(rows[0]["Started at"], "")
+        self.assertGreaterEqual(float(rows[1]["Processing seconds"]), 0)
+
+    def test_previous_csv_header_adds_instance_columns_without_losing_reports(self):
+        self.assertEqual(self.inspect("prior")[0], 0)
+        original = read_history(self.sheet)[0]
+        with self.sheet.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=PRE_INSTANCE_FIELDS)
+            writer.writeheader()
+            writer.writerow({name: original[name] for name in PRE_INSTANCE_FIELDS})
+        self.assertEqual(self.inspect("new")[0], 0)
+        rows = read_history(self.sheet)
+        self.assertEqual(rows[0]["Report JSON"], original["Report JSON"])
+        self.assertEqual((rows[0]["Eligible instances"], rows[0]["Skipped instances"]), ("", ""))
+        self.assertEqual(rows[1]["Run ID"], json.loads(rows[1]["Report JSON"])["history"]["run_id"])
+
+    def test_read_only_history_accepts_additive_columns_but_writer_rejects_them(self):
+        self.assertEqual(self.inspect("prior")[0], 0)
+        original = read_history(self.sheet)[0]
+        from attention_maps.explorer.inspection_history import FIELDS
+        with self.sheet.open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=(*FIELDS, "Future metric"))
+            writer.writeheader()
+            writer.writerow({**original, "Future metric": "present"})
+        with self.assertRaisesRegex(ValueError, "incompatible header"):
+            read_history(self.sheet)
+        self.assertEqual(read_history(self.sheet, allow_additive_fields=True)[0]["Future metric"], "present")
 
     def test_inconclusive_and_unsupported_categories_are_recorded_without_false_summary_labels(self):
         source = self.root / "categories.jsonl"

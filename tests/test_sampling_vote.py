@@ -81,6 +81,40 @@ class RepeatedSamplingTests(unittest.TestCase):
         self.assertEqual(results[0], results[1])
         self.assertEqual(results[0], results[2])
 
+    def test_unlabelled_worker_batch_uses_one_model_call(self):
+        from attention_maps.explorer import sampling_vote
+
+        class BatchDetector:
+            metadata = {'method': 'fasttext'}
+
+            def __init__(self):
+                self.calls = []
+
+            def detect_many(self, texts):
+                self.calls.append(texts)
+                return [
+                    {'language': 'ne', 'score': .99, 'truncated': False, 'reason': 'accepted'}
+                    for _ in texts
+                ]
+
+            def detect(self, _text):
+                raise AssertionError('unlabelled batch must not make scalar predictions')
+
+        detector = BatchDetector()
+        batch = [
+            ({'text': 'नेपाल राम्रो छ'}, (0, 1)),
+            ({'text': 'नेपाली भाषा'}, (1,)),
+        ]
+        with patch.object(sampling_vote, '_worker_detector', detector):
+            unique, runs, metadata = sampling_vote.analyze_selected_batch(
+                batch, ['text'], (), {}, 2
+            )
+        self.assertEqual(len(detector.calls), 1)
+        self.assertEqual(detector.calls[0], ['नेपाल राम्रो छ', 'नेपाली भाषा'])
+        self.assertEqual((unique.records, runs[0].records, runs[1].records), (2, 1, 2))
+        self.assertEqual(unique.predicted['ne'], 2)
+        self.assertEqual(metadata['method'], 'fasttext')
+
     def test_all_selected_text_is_analyzed_beyond_old_character_cap(self):
         analysis = RepeatedSampleAnalysis({}, settings(sample_fraction=1), ["text"], 1)
         text = "नेपाल " * 30000 + "English"

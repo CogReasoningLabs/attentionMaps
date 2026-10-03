@@ -110,32 +110,58 @@ class FastTextLanguageDetector:
         except importlib.metadata.PackageNotFoundError:
             self.metadata['package_version'] = 'unknown'
 
-    def detect(self, text):
+    def detect_many(self, texts):
+        """Predict several independent records with one fastText batch call."""
         limit = self.settings['language_detection_max_characters']
-        # Bound model work; keep the full text for the separate script analysis.
-        portion = text[:limit]
-        cleaned = ' '.join(portion.replace('\x00', ' ').split())
-        result = {'language': None, 'score': None, 'characters': len(portion),
-                  'truncated': len(text) > limit, 'reason': 'too_short'}
-        if sum(character.isalpha() for character in cleaned) < self.settings['language_detection_min_letters']:
-            return result
+        min_letters = self.settings['language_detection_min_letters']
+        results = []
+        prepared = []
+        prepared_indexes = []
+        for text in texts:
+            portion = text[:limit]
+            cleaned = ' '.join(portion.replace('\x00', ' ').split())
+            result = {'language': None, 'score': None, 'characters': len(portion),
+                      'truncated': len(text) > limit, 'reason': 'too_short'}
+            results.append(result)
+            # We only need to know whether the threshold is reached. Most
+            # records have enough letters near the start; stop counting then.
+            letters = 0
+            for character in cleaned:
+                if character.isalpha():
+                    letters += 1
+                    if letters >= min_letters:
+                        break
+            if letters >= min_letters:
+                prepared_indexes.append(len(results) - 1)
+                prepared.append(cleaned)
+        if not prepared:
+            return results
+
         self._load()
-        # The public batch API avoids fastText's scalar np.array(copy=False) path
-        # which is incompatible with NumPy 2. No private model methods are used.
+        # Always use fastText's public list API (including one-item batches);
+        # it avoids the NumPy 2 scalar copy=False compatibility issue.
         try:
-            labels, scores = self._model.predict([cleaned], k=1)
+            labels, scores = self._model.predict(prepared, k=1)
         except (RuntimeError, ValueError) as error:
             raise ValueError(f'fastText language prediction failed: {error}') from error
-        if not len(labels) or not len(labels[0]) or not len(scores) or not len(scores[0]):
-            return {**result, 'reason': 'no_prediction'}
-        label, score = str(labels[0][0]), float(scores[0][0])
-        if not label.startswith('__label__') or not label.removeprefix('__label__') or not math.isfinite(score):
-            return {**result, 'reason': 'invalid_prediction'}
-        score = min(1.0, max(0.0, score))
-        result.update(score=score, reason='low_confidence')
-        if score >= self.settings['language_detection_min_confidence']:
-            result.update(language=label.removeprefix('__label__'), reason='accepted')
-        return result
+        for position, result_index in enumerate(prepared_indexes):
+            result = results[result_index]
+            if (position >= len(labels) or position >= len(scores)
+                    or not len(labels[position]) or not len(scores[position])):
+                result['reason'] = 'no_prediction'
+                continue
+            label, score = str(labels[position][0]), float(scores[position][0])
+            if not label.startswith('__label__') or not label.removeprefix('__label__') or not math.isfinite(score):
+                result['reason'] = 'invalid_prediction'
+                continue
+            score = min(1.0, max(0.0, score))
+            result.update(score=score, reason='low_confidence')
+            if score >= self.settings['language_detection_min_confidence']:
+                result.update(language=label.removeprefix('__label__'), reason='accepted')
+        return results
+
+    def detect(self, text):
+        return self.detect_many([text])[0]
 
 
 def make_language_detector(settings=None):

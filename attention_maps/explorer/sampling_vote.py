@@ -7,10 +7,13 @@ from collections import Counter
 from decimal import Decimal, ROUND_CEILING
 from typing import Protocol
 
+from attention_maps.eda.text import extract_text
+
 from .classification_thresholds import resolve_thresholds
 from .language_detection import make_language_detector
+from .inspection_examples import InspectionExamples, validate_inspection_examples
 from .language_status import (
-    LANGUAGE_COVERAGE_OPTIONS, SCRIPT_OPTIONS, LanguageEvidence, language_context,
+    LANGUAGE_COVERAGE_OPTIONS, LANGUAGE_FIELDS, SCRIPT_OPTIONS, LanguageEvidence, language_context,
     record_language_evidence, status_from_evidence,
 )
 
@@ -54,19 +57,53 @@ def initialize_evidence_worker(settings: dict) -> None:
     _worker_detector = make_language_detector(settings)
 
 
+def _inspection_text(record, fields, definition, source_row, source_identity, source_split):
+    if definition is None:
+        return extract_text(record, fields)
+    from .semantic_instances import inspection_instance_text
+    try:
+        return inspection_instance_text(record, definition, source_row=source_row,
+                                        source_identity=source_identity, source_split=source_split)
+    except ValueError as error:
+        raise ValueError(f"Invalid {definition['schema']} instance at source row {source_row}: {error}") from error
+
+
 def analyze_selected_batch(batch: list[tuple[dict, tuple[int, ...]]], fields: list[str],
-                           hf_selection: tuple[dict, ...], thresholds: dict, runs: int):
+                           hf_selection: tuple[dict, ...], thresholds: dict, runs: int,
+                           definition=None, source_identity="inspection", source_split=None, example_seed=None):
     """Return mergeable counts without sending individual evidence back to the parent."""
     unique = LanguageEvidence()
     per_run = [LanguageEvidence() for _ in range(runs)]
-    for record, chosen in batch:
-        summary = record_language_evidence(record, fields, detector=_worker_detector,
-                                           hf_selection=hf_selection, thresholds=thresholds)
+    examples = InspectionExamples(example_seed) if example_seed is not None else None
+    # TXT/other unlabelled batches are common. Predict all their records in
+    # one model call, then keep the existing one-record evidence/vote logic.
+    unlabelled_batch = (
+        _worker_detector is not None and not hf_selection
+        and all(not any(record.get(field) not in (None, "") for field in LANGUAGE_FIELDS)
+                for record, *_ in batch)
+    )
+    texts = [
+        _inspection_text(item[0], fields, definition, item[2] if len(item) > 2 else position,
+                         source_identity, source_split)
+        for position, item in enumerate(batch)
+    ] if unlabelled_batch or definition is not None else None
+    predictions = _worker_detector.detect_many(texts) if unlabelled_batch else None
+    for position, item in enumerate(batch):
+        record, chosen = item[:2]
+        content = texts[position] if texts is not None else extract_text(record, fields)
+        prediction_details = {}
+        summary = record_language_evidence(
+            record, fields, detector=_worker_detector, hf_selection=hf_selection, thresholds=thresholds,
+            extracted_text=content, prediction_details=prediction_details,
+            precomputed_prediction=predictions[position] if predictions is not None else None,
+        )
+        if examples is not None:
+            examples.observe(summary, content, item[2] + 1, hf_selection=hf_selection, prediction=prediction_details)
         unique.add(summary)
         for index in chosen:
             per_run[index].add(summary)
     metadata = dict(_worker_detector.metadata) if _worker_detector is not None else None
-    return unique, per_run, metadata
+    return (unique, per_run, metadata, examples) if examples is not None else (unique, per_run, metadata)
 
 
 def majority_vote(labels: list[str], min_agreement: float | None = None) -> dict:
@@ -94,7 +131,7 @@ class RepeatedSampleAnalysis:
     """One source traversal, independent samples, and exact unique coverage counts."""
 
     def __init__(self, inventory: dict, settings: dict, fields: list[str], population: int,
-                 *, population_basis: str = "source metadata"):
+                 *, population_basis: str = "source metadata", instance_definition=None):
         if type(population) is not int or population < 0:
             raise ValueError("Sampling population must be a non-negative integer")
         if type(settings.get("sampling_runs")) is not int or settings["sampling_runs"] < 1:
@@ -111,6 +148,9 @@ class RepeatedSampleAnalysis:
         self.concurrency = settings.get("concurrency", 1)
         self.batch_size = settings.get("batch_size", 1024)
         self.fields = fields
+        self.instance_definition = instance_definition
+        self.source_identity = inventory.get("dataset_id") or inventory.get("path") or "inspection"
+        self.source_split = inventory.get("dataset_split")
         self.thresholds = resolve_thresholds(settings)
         self.detector = make_language_detector(settings)
         self.context = {"detector": self.detector, **language_context(inventory, settings.get("languages") or ()), "thresholds": self.thresholds}
@@ -123,6 +163,7 @@ class RepeatedSampleAnalysis:
         self.selectors: list[SamplingStrategy] = [strategy(population, self.fraction, seed) for seed in self.seeds]
         self.evidence = [LanguageEvidence() for _ in self.seeds]
         self.unique = LanguageEvidence()
+        self.examples = InspectionExamples(settings["seed"])
         self.scanned = 0
 
     def select_record(self, record: dict) -> tuple[dict, tuple[int, ...]] | None:
@@ -137,14 +178,22 @@ class RepeatedSampleAnalysis:
         if selected is None:
             return
         # Every character in every selected record is analyzed, once per unique row.
-        summary = record_language_evidence(record, self.fields, detector=self.detector,
-                                           hf_selection=self.context["hf_selection"], thresholds=self.thresholds)
+        content = _inspection_text(record, self.fields, self.instance_definition, self.scanned - 1,
+                                   self.source_identity, self.source_split)
+        prediction_details = {}
+        summary = record_language_evidence(record, self.fields, extracted_text=content, detector=self.detector,
+                                           hf_selection=self.context["hf_selection"], thresholds=self.thresholds,
+                                           prediction_details=prediction_details)
+        self.examples.observe(summary, content, self.scanned, hf_selection=self.context["hf_selection"],
+                              prediction=prediction_details)
         self.unique.add(summary)
         for index in selected[1]:
             self.evidence[index].add(summary)
 
     def merge_batch(self, result) -> None:
-        unique, per_run, metadata = result
+        unique, per_run, metadata = result[:3]
+        if len(result) > 3:
+            self.examples.merge(result[3])
         self.unique.add(unique)
         for target, batch_evidence in zip(self.evidence, per_run, strict=True):
             target.add(batch_evidence)
@@ -200,6 +249,7 @@ class RepeatedSampleAnalysis:
             "within_run_replacement": False, "overlap_between_runs": True,
             "character_limit_per_run": None, "run_results": runs,
         }
+        combined["record_examples"] = self.examples.result()
         return combined
 
 
@@ -241,13 +291,19 @@ def _validate_category_proportions(status: dict) -> None:
     ):
         counts = status[f"{prefix}_category_counts"]
         percentages = status[f"{prefix}_category_percentages"]
-        if (not isinstance(counts, dict) or set(counts) != set(options)
-                or not isinstance(percentages, dict) or set(percentages) != set(options)
+        allowed_options = [set(options), set(options) | {"Other", "Unknown"}]
+        if prefix == "language":
+            allowed_options.append(set(options) | {"Other"})  # Interim reports.
+        valid_options = set(counts) if isinstance(counts, dict) else set()
+        complete = "Unknown" in valid_options
+        if (not isinstance(counts, dict) or valid_options not in allowed_options
+                or not isinstance(percentages, dict) or set(percentages) != valid_options
                 or any(type(count) is not int or count < 0 for count in counts.values())
                 or any(type(status[gap]) is not int or status[gap] < 0 for gap in gaps)
-                or sum(counts.values()) + sum(status[gap] for gap in gaps) != denominator):
+                or sum(counts.values()) + (0 if complete else sum(status[gap] for gap in gaps)) != denominator
+                or complete and (counts["Unknown"] != status[gaps[0]] or counts["Other"] != status[gaps[1]])):
             raise ValueError("Inspection report has inconsistent category counts")
-        for name in options:
+        for name in counts:
             expected = round(counts[name] * 100 / denominator, 2) if denominator else 0.0
             value = percentages[name]
             if type(value) not in (int, float) or abs(value - expected) > 1e-6:
@@ -258,6 +314,7 @@ def validate_sampling_result(status: dict) -> None:
     """Keep malformed saved voting results out of the read-only UI."""
     _validate_nepali_script(status)
     _validate_category_proportions(status)
+    validate_inspection_examples(status)
     if status.get("script_policy") == "nepali_required_v3" and not isinstance(status.get("classification_thresholds"), dict):
         raise ValueError("Inspection report is missing classification thresholds")
     thresholds = resolve_thresholds(status.get("classification_thresholds")) if status.get("script_policy") == "nepali_required_v3" else None

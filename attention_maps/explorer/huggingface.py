@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import urllib.request
 import urllib.parse
 from dataclasses import replace
@@ -30,16 +31,32 @@ def discover_huggingface_dataset(
             dataset_id, revision=revision or "main", files_metadata=True
         )
         resolved_revision = info.sha
-        configs = get_dataset_config_names(
-            dataset_id, revision=resolved_revision, token=token
-        )
+        try:
+            configs = get_dataset_config_names(
+                dataset_id, revision=resolved_revision, token=token
+            )
+            raw_data_files = None
+        except Exception as error:
+            if (dataset_id != "MBZUAI/Bactrian-X"
+                    or "Dataset scripts are no longer supported" not in str(error)):
+                raise
+            # Bactrian-X's builder maps data/<config>.json.gz to train.
+            # Read those files at the pinned revision without executing it.
+            raw_data_files = {}
+            for item in info.siblings or []:
+                match = re.fullmatch(r"data/([A-Za-z0-9_-]+)\.json\.gz", item.rfilename)
+                if match:
+                    raw_data_files[match.group(1)] = item.rfilename
+            if not raw_data_files:
+                raise ValueError("Legacy dataset script is unsupported and no data/<config>.json.gz files were found") from error
+            configs = sorted(raw_data_files)
     except Exception as error:
         raise ValueError(f"Could not discover Hugging Face dataset: {error}") from error
     card = info.card_data.to_dict() if info.card_data else {}
     languages = card.get("language") or []
     if isinstance(languages, str):
         languages = [languages]
-    return {
+    catalog = {
         "dataset_id": dataset_id,
         "requested_revision": revision or "main",
         "revision": resolved_revision,
@@ -47,6 +64,9 @@ def discover_huggingface_dataset(
         "languages": languages,
         "file_sizes": {item.rfilename: item.size for item in info.siblings or []},
     }
+    if raw_data_files is not None:
+        catalog.update(dataset_loader="json", raw_data_files=raw_data_files)
+    return catalog
 
 
 def _repository_path(url: str, dataset_id: str) -> str | None:
@@ -72,6 +92,15 @@ def inspect_huggingface_configuration(
 
     if config not in catalog["configs"]:
         raise ValueError(f"Unknown dataset configuration: {config}")
+    if catalog.get("dataset_loader") == "json":
+        relative = catalog["raw_data_files"][config]
+        shard = {"path": f"hf://datasets/{catalog['dataset_id']}@{catalog['revision']}/{relative}",
+                 "name": relative, "bytes": catalog["file_sizes"].get(relative)}
+        return {"dataset_id": catalog["dataset_id"], "revision": catalog["revision"],
+                "config": config, "languages": catalog.get("languages", []),
+                "dataset_loader": "json", "schema": [],
+                "splits": {"train": {"rows": None, "memory_bytes": None,
+                                     "shards": [shard], "file_formats": describe_dataset_formats([shard])}}}
     try:
         builder = load_dataset_builder(
             catalog["dataset_id"], name=config, revision=catalog["revision"], token=token
@@ -89,9 +118,14 @@ def inspect_huggingface_configuration(
                 "name": relative or path,
                 "bytes": catalog["file_sizes"].get(relative),
             })
+        reported_rows = getattr(info, "num_examples", None)
+        # A zero-valued SplitInfo for nonempty data files often means the
+        # builder has no prepared statistics, not that the files have no rows.
+        if reported_rows == 0 and shards:
+            reported_rows = None
         splits[str(split)] = {
-            "rows": getattr(info, "num_examples", None),
-            "memory_bytes": getattr(info, "num_bytes", None),
+            "rows": reported_rows,
+            "memory_bytes": getattr(info, "num_bytes", None) if reported_rows is not None else None,
             "shards": shards,
             "file_formats": describe_dataset_formats(shards),
         }
@@ -109,6 +143,21 @@ def inspect_huggingface_configuration(
             for name, feature in features.items()
         ],
     }
+
+
+def load_selected_huggingface_stream(
+    dataset_id: str, config: str, split: str, revision: str, shards: Sequence[str],
+    *, loader: str | None = None, token: str | None = None, filters=None,
+):
+    """Load pinned source files, bypassing obsolete repository builder scripts."""
+    from datasets import load_dataset
+
+    kwargs = {"split": split, "data_files": {split: list(shards)}, "streaming": True, "token": token}
+    if filters is not None:
+        kwargs["filters"] = filters
+    if loader == "json":
+        return load_dataset("json", **kwargs)
+    return load_dataset(dataset_id, config, revision=revision, **kwargs)
 
 
 def select_huggingface_shards(
@@ -220,7 +269,9 @@ def inspect_huggingface_selection(
             rows = int(viewer["num_rows"])
             memory = viewer.get("num_bytes_memory")
             source = "Dataset Viewer (matching revision and split)"
-    if not metadata_only and (rows is None or not schema):
+    # Builder split counts can be missing, zero, or stale for data-files-based
+    # datasets. Exact random sampling needs the selected files' actual row count.
+    if not metadata_only and (parquet_only or rows is None or not schema):
         if parquet_only:
             metadata = [_parquet_metadata(item["path"], token=token) for item in selected]
             rows = sum(item["rows"] for item in metadata)
@@ -231,12 +282,10 @@ def inspect_huggingface_selection(
             variants = len({json.dumps(value, sort_keys=True) for value in schemas})
             source = "Parquet footers (selected shards)"
         elif not schema:
-            from datasets import load_dataset
-
-            stream = load_dataset(
-                configuration["dataset_id"], configuration["config"], split=split,
-                revision=configuration["revision"], streaming=True, token=token,
-                data_files={split: [item["path"] for item in selected]},
+            stream = load_selected_huggingface_stream(
+                configuration["dataset_id"], configuration["config"], split,
+                configuration["revision"], [item["path"] for item in selected],
+                loader=configuration.get("dataset_loader"), token=token,
             )
             # Resolving features reads a bounded first batch, not the whole split.
             features = stream.features
@@ -255,6 +304,7 @@ def inspect_huggingface_selection(
         "format": "huggingface", "provider": "huggingface", "dataset_id": configuration["dataset_id"],
         "dataset_config": configuration["config"], "dataset_split": split,
         "dataset_revision": configuration["revision"],
+        "dataset_loader": configuration.get("dataset_loader"),
         "dataset_shards": [item["path"] for item in selected],
         "file_formats": describe_dataset_formats(selected), "metadata_only": metadata_only,
         "shards": selected, "total_split_shards": len(split_info["shards"]),
@@ -271,12 +321,10 @@ def inspect_huggingface_selection(
     if filter_column and metadata_only:
         raise ValueError("Metadata-only inspection cannot count filtered records")
     if filter_column:
-        from datasets import load_dataset
-
-        stream = load_dataset(
-            configuration["dataset_id"], configuration["config"], split=split,
-            revision=configuration["revision"], streaming=True, token=token,
-            data_files={split: inventory["dataset_shards"]},
+        stream = load_selected_huggingface_stream(
+            configuration["dataset_id"], configuration["config"], split,
+            configuration["revision"], inventory["dataset_shards"],
+            loader=configuration.get("dataset_loader"), token=token,
             filters=[(filter_column, "==", filter_value)],
         )
         count = sum(record.get(filter_column) == filter_value for record in stream)

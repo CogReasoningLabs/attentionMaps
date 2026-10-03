@@ -12,7 +12,7 @@ from attention_maps.common.google_drive import (
     download_google_drive_path,
     extract_google_drive_id,
 )
-from attention_maps.datasets.schemas import STANDARD_TRAINING_SCHEMAS
+from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 
 from .catalog import DEFAULT_DATA_ROOT, DatasetSpec
 
@@ -33,9 +33,10 @@ _SCHEMA_PURPOSES = {
     schema.key: (
         "Task-specific fine-tuning"
         if schema.key == "task_specific_supervised"
+        else "Evaluation / benchmark" if schema.key == "evaluation"
         else schema.label
     )
-    for schema in STANDARD_TRAINING_SCHEMAS
+    for schema in STANDARD_DATASET_SCHEMAS
 }
 
 

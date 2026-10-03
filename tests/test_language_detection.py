@@ -56,6 +56,26 @@ class LanguageDetectionTests(unittest.TestCase):
         model.predict.return_value = ([['__label__ne']], [[float('nan')]])
         self.assertEqual(detector.detect('abcd')['reason'], 'invalid_prediction')
 
+    def test_multi_record_prediction_preserves_one_result_per_input(self):
+        detector = FastTextLanguageDetector({
+            'language_detection': 'fasttext',
+            'language_detection_min_letters': 2,
+            'language_detection_max_characters': 10,
+        })
+        model = Mock()
+        model.predict.return_value = (
+            [['__label__ne'], ['__label__en']],
+            [[.91], [.7]],
+        )
+        detector._model = model
+        results = detector.detect_many(['नेपाल भाषा', '1 !', 'English language'])
+        model.predict.assert_called_once_with(['नेपाल भाषा', 'English la'], k=1)
+        self.assertEqual([item['reason'] for item in results],
+                         ['accepted', 'too_short', 'low_confidence'])
+        self.assertEqual([item['language'] for item in results], ['ne', None, None])
+        self.assertEqual(results[2]['characters'], 10)
+        self.assertTrue(results[2]['truncated'])
+
     def test_missing_custom_model_fails_instead_of_fabricating_unknown(self):
         with tempfile.TemporaryDirectory() as directory:
             detector = FastTextLanguageDetector({'language_detection_model': str(Path(directory)/'custom.bin')})

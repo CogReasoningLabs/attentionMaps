@@ -4,13 +4,15 @@ import hashlib
 import json
 from pathlib import Path
 
-from attention_maps.datasets.schemas import STANDARD_TRAINING_SCHEMAS
+from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 from .inspection_runs import iter_inspection_records
+from .field_parsers import parse_field, validate_field_parsers
 
-SCHEMAS = {schema.key: schema for schema in STANDARD_TRAINING_SCHEMAS}
+SCHEMAS = {schema.key: schema for schema in STANDARD_DATASET_SCHEMAS}
 FIELD_NAMES = {field for schema in SCHEMAS.values() for field in schema.required_fields}
 UNITS = {"pretraining": "one document", "instruction_finetuning": "one complete conversation",
-         "task_specific_supervised": "one labelled example", "preference_tuning": "one prompt/chosen/rejected group"}
+         "task_specific_supervised": "one labelled example", "preference_tuning": "one prompt/chosen/rejected group",
+         "evaluation": "one input/reference example"}
 
 
 def path_value(record, path):
@@ -31,6 +33,7 @@ def display_value(value):
 def resolve_instance_definition(inventory, fields, args):
     schema = getattr(args, "training_schema", "auto")
     mapping = getattr(args, "field_mapping", None) or {}
+    parsers = validate_field_parsers(getattr(args, "field_parsers", None))
     if not isinstance(mapping, dict):
         raise ValueError("field_mapping must be a mapping of canonical fields to source paths")
     available = set(inventory["columns"]) | set(mapping)
@@ -44,7 +47,7 @@ def resolve_instance_definition(inventory, fields, args):
         else:
             schema = "pretraining"
     if schema not in SCHEMAS:
-        raise ValueError("Choose one of the four canonical training schemas")
+        raise ValueError("Choose a supported dataset instance schema")
     for target, source in mapping.items():
         if target not in FIELD_NAMES or not isinstance(source, str) or not source.strip():
             raise ValueError("field_mapping must map canonical field names to non-empty source paths")
@@ -53,17 +56,23 @@ def resolve_instance_definition(inventory, fields, args):
     if schema in {"pretraining", "task_specific_supervised"}:
         if "text" in mapping:
             fields = [mapping["text"]]
+        elif schema == "pretraining" and not getattr(args, "text_columns", None):
+            # An unconfigured document is one natural-language field, not every
+            # string-valued metadata column or a list of paragraph strings.
+            types = {field["column"]: field["type"].lower() for field in inventory.get("schema", [])}
+            fields = [field for field in fields if "string" in types.get(field, "string")
+                      and not any(part in types.get(field, "").lower() for part in ("list", "sequence", "struct", "map"))][:1]
         if not fields or any(field.split(".")[0] not in inventory["columns"] for field in fields):
             raise ValueError("Choose valid text_columns or field_mapping.text for this schema")
     else:
-        fields = []  # The whole structured instance defines its text, never a subset of turns/branches.
+        fields = []  # Structured instances use their complete mapped fields.
     unit = getattr(args, "text_record_unit", "line")
     if unit not in {"line", "blank_line"}:
         raise ValueError("text_record_unit must be line or blank_line")
     if unit != "line" and inventory["format"] != "text":
         raise ValueError("text_record_unit: blank_line applies only to a local/staged TXT source")
     return {"version": 1, "schema": schema, "label": SCHEMAS[schema].label, "unit": UNITS[schema],
-            "required_fields": list(SCHEMAS[schema].required_fields), "field_mapping": mapping,
+            "required_fields": list(SCHEMAS[schema].required_fields), "field_mapping": mapping, "field_parsers": parsers,
             "text_columns": list(fields), "text_record_unit": unit if inventory["format"] == "text" else "source_row",
             "task_name": getattr(args, "task_name", None),
             "embedding_policy": {
@@ -71,6 +80,7 @@ def resolve_instance_definition(inventory, fields, args):
                 "instruction_finetuning": "All messages in order, with role markers",
                 "task_specific_supervised": "Task, complete input text, and label, with field markers",
                 "preference_tuning": "Prompt, chosen, and rejected together, with field/role markers",
+                "evaluation": "Input and reference together, with field markers",
             }[schema],
             "metadata_policy": "IDs, split and provenance are displayed and retained, but excluded from the embedding text. Unknown splits remain null; this adapter does not assign training splits."}
 
@@ -86,8 +96,10 @@ def _messages(value):
         role = message.get("role", message.get("from"))
         role = {"human": "user", "gpt": "assistant"}.get(role, role)
         content = message.get("content", message.get("value", message.get("text")))
-        if role not in {"system", "user", "assistant"} or not display_value(content).strip():
-            raise ValueError("Each message needs non-empty content and a system/user/assistant role")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError("Each message needs a system/user/assistant role")
+        if not display_value(content).strip():
+            raise ValueError(f"{role} message has empty content")
         if (role == "system" and result) or (role == "assistant" and previous != "user") or (role == "user" and previous == "user"):
             raise ValueError("Invalid conversation role order; keep complete user/assistant turns together")
         result.append({**message, "role": role, "content": content})
@@ -111,16 +123,18 @@ def branch_text(value):
     raise ValueError("Preference fields must be text or ordered messages with role and content")
 
 
-def make_instance(record, definition, *, source_row, source_identity, source_split=None):
+def make_instance(record, definition, *, source_row, source_identity, source_split=None, hash_generated_id=True):
     mapping = definition["field_mapping"]
+    parsers = definition.get("field_parsers") or {}
 
     def field(name, *aliases):
         if name in mapping:
-            return path_value(record, mapping[name])
-        for key in (name, *aliases):
-            if key in record:
-                return record[key]
-        return None
+            source = mapping[name]
+            value = path_value(record, source)
+        else:
+            source = next((key for key in (name, *aliases) if key in record), name)
+            value = record.get(source)
+        return parse_field(value, parsers[name], field=name, source=source) if name in parsers else value
 
     schema = definition["schema"]
     # The raw record remains separately intact; canonical fields are never written back to it.
@@ -128,12 +142,20 @@ def make_instance(record, definition, *, source_row, source_identity, source_spl
     identifier = field("id")
     generated = identifier is None or str(identifier).strip() == ""
     if generated:
-        digest = hashlib.sha256(json.dumps([source_identity, source_row, record], ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
-        identifier = "source-" + digest[:24]
+        if hash_generated_id:
+            digest = hashlib.sha256(json.dumps([source_identity, source_row, record], ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+            identifier = "source-" + digest[:24]
+        else:
+            identifier = f"inspection-row-{source_row}"
     if type(identifier) not in (str, int):
         raise ValueError("Instance id must be a string or integer")
     split = field("split")
-    if split is None:
+    # A source split can be a language/domain partition (for example, "nep"),
+    # which is not a train/validation/test assignment. Preserve its name
+    # separately without inventing a canonical training split.
+    if source_split is not None:
+        instance["source_split"] = source_split
+    if split is None and source_split in {"train", "validation", "test", "val", "dev"}:
         split = source_split
     if split == "val" or split == "dev":
         split = "validation"
@@ -142,8 +164,14 @@ def make_instance(record, definition, *, source_row, source_identity, source_spl
     instance.update(id=identifier, split=split)
     if schema in {"pretraining", "task_specific_supervised"}:
         parts = [path_value(record, path) for path in definition["text_columns"]]
-        if any(value is not None and not isinstance(value, str) for value in parts):
-            raise ValueError("Document/example text fields must be strings; map text fields rather than metadata objects")
+        if "text" in parsers:
+            parts = [parse_field(value, parsers["text"], field="text", source=path)
+                     for path, value in zip(definition["text_columns"], parts)]
+        invalid = [(path, type(value).__name__) for path, value in zip(definition["text_columns"], parts)
+                   if value is not None and not isinstance(value, str)]
+        if invalid:
+            raise ValueError(f"Document/example text fields must be strings; invalid fields: {invalid}. "
+                             "Map text fields rather than metadata objects")
         text = "\n\n".join(value for value in parts if value is not None and value.strip())
         instance["text"] = text
         if schema == "task_specific_supervised":
@@ -153,6 +181,18 @@ def make_instance(record, definition, *, source_row, source_identity, source_spl
                 raise ValueError("Supervised instances require label and task (or set task_name in the embedding config)")
             instance.update(label=label, task=task)
             text = f"[task]\n{task}\n\n[text]\n{text}\n\n[label]\n{display_value(label)}" if text.strip() else ""
+    elif schema == "evaluation":
+        for name in ("input", "reference"):
+            value = field(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Evaluation instances require a non-empty string {name}")
+            instance[name] = value
+        task = field("task") or definition["task_name"]
+        if task is not None and (not isinstance(task, str) or not task.strip()):
+            raise ValueError("Evaluation task must be non-empty text when provided")
+        if task is not None:
+            instance["task"] = task
+        text = f"[input]\n{instance['input']}\n\n[reference]\n{instance['reference']}"
     elif schema == "instruction_finetuning":
         messages = field("messages", "conversations")
         if messages is None and "instruction" in record:
@@ -182,9 +222,37 @@ def make_instance(record, definition, *, source_row, source_identity, source_spl
     return instance, text, generated
 
 
-def iter_instance_records(inventory, definition, *, token=None):
+def inspection_instance_text(record, definition, *, source_row=0, source_identity="inspection", source_split=None):
+    """Validate an atomic instance and return its language-bearing content."""
+    instance, _, _ = make_instance(
+        record, definition, source_row=source_row, source_identity=source_identity,
+        source_split=source_split, hash_generated_id=False,
+    )
+    schema = definition["schema"]
+    if schema in {"pretraining", "task_specific_supervised"}:
+        return instance["text"]
+    if schema == "evaluation":
+        return "\n\n".join((instance["input"], instance["reference"]))
+    if schema == "instruction_finetuning":
+        mapped_messages = definition["field_mapping"].get("messages")
+        explicit_messages = (path_value(record, mapped_messages) if mapped_messages
+                             else record.get("messages", record.get("conversations")))
+        if explicit_messages is None and "instruction" in record:
+            # make_instance adds a synthetic [input] marker for embedding, but
+            # script/language evidence must only count source-authored content.
+            answer = next((record[key] for key in ("output", "response", "answer") if key in record), None)
+            return "\n\n".join(display_value(value) for value in
+                                 (record.get("system"), record["instruction"], record.get("input"), answer)
+                                 if display_value(value).strip())
+        return "\n\n".join(display_value(message["content"]) for message in instance["messages"])
+    def content(value):
+        return value if isinstance(value, str) else "\n\n".join(display_value(message["content"]) for message in value)
+    return "\n\n".join(content(instance[name]) for name in ("prompt", "chosen", "rejected"))
+
+
+def iter_instance_records(inventory, definition, *, token=None, batch_size=1024):
     if definition["text_record_unit"] != "blank_line":
-        yield from iter_inspection_records(inventory, token=token)
+        yield from iter_inspection_records(inventory, token=token, batch_size=batch_size)
         return
     if inventory.get("row_filters"):
         raise ValueError("blank_line text records do not have language metadata; choose a language-specific file")

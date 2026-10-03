@@ -4,9 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from attention_maps.explorer.inspection_runs import load_inspection_report
+from attention_maps.explorer.inspection_runs import (
+    _observe_records, build_inspection_report, iter_inspection_records, load_inspection_report,
+)
+from attention_maps.explorer.inspection_history import read_history
 from scripts.inspect_dataset import _arguments
 from tests.inspection_helpers import isolated_main as main
 
@@ -107,6 +110,246 @@ class InspectionRunTests(unittest.TestCase):
         self.assertIsNone(report["inventory"]["rows"])
         self.assertEqual(report["inventory"]["bytes"], 200)
         self.assertEqual(report["filter_result"]["rows_scanned"], 2)
+
+    def test_huggingface_native_batches_preserve_rows_and_use_requested_size(self):
+        class BatchedStream:
+            def __init__(self):
+                self.requested = []
+
+            def iter(self, batch_size):
+                self.requested.append(batch_size)
+                yield {"text": ["नेपाल", "English"], "language": ["ne", "en"]}
+                yield {"text": ["नेपाली"], "language": ["ne"]}
+
+        stream = BatchedStream()
+        inventory = {
+            "format": "huggingface", "dataset_id": "owner/data", "dataset_config": "ne",
+            "dataset_split": "train", "dataset_shards": ["second.parquet"],
+            "filter_column": "language", "filter_value": "ne",
+        }
+        with patch("datasets.load_dataset", return_value=stream):
+            rows = list(iter_inspection_records(inventory, batch_size=7))
+        self.assertEqual(stream.requested, [7])
+        self.assertEqual(rows, [
+            {"text": "नेपाल", "language": "ne"},
+            {"text": "नेपाली", "language": "ne"},
+        ])
+
+    def test_interrupted_huggingface_batch_reader_is_closed(self):
+        events = []
+
+        class BatchedStream:
+            def iter(self, batch_size):
+                try:
+                    yield {"text": ["first", "second"]}
+                finally:
+                    events.append("batch reader closed")
+
+        inventory = {
+            "format": "huggingface", "dataset_id": "owner/data", "dataset_config": "default",
+            "dataset_split": "nep", "dataset_shards": ["one.parquet"],
+        }
+        with patch("datasets.load_dataset", return_value=BatchedStream()):
+            rows = iter_inspection_records(inventory, batch_size=2)
+            self.assertEqual(next(rows), {"text": "first"})
+            rows.close()
+        self.assertEqual(events, ["batch reader closed"])
+
+    def test_nepali_source_split_can_be_sampled_with_parallel_workers(self):
+        class BatchedStream:
+            def iter(self, batch_size):
+                yield {"doc_id": ["a", "b", "c"],
+                       "text": ["नेपाल राम्रो छ", "अर्को नेपाली लेख", "यो पनि नेपाली हो"]}
+
+        inventory = {
+            "format": "huggingface", "provider": "huggingface", "dataset_id": "owner/corpus",
+            "dataset_config": "verified", "dataset_split": "nep", "dataset_revision": "frozen",
+            "dataset_shards": ["one.parquet"], "rows": 3,
+            "schema": [{"column": "doc_id", "type": "string"}, {"column": "text", "type": "string"}],
+            "columns": ["doc_id", "text"],
+        }
+        settings = {
+            "training_schema": "pretraining", "field_mapping": {"id": "doc_id"},
+            "text_columns": ["text"], "language_detection": "none",
+            "sample_fraction": 1.0, "sampling_runs": 1, "concurrency": 2,
+            "batch_size": 2, "seed": 42,
+        }
+        with patch("datasets.load_dataset", return_value=BatchedStream()):
+            report = build_inspection_report(inventory, settings)
+        self.assertEqual(report["language_status"]["sampling"]["rows_scanned"], 3)
+        self.assertEqual(report["language_status"]["sampling"]["unique_sampled_records"], 3)
+        self.assertEqual(report["inventory"]["dataset_split"], "nep")
+
+    def test_source_reader_closes_before_worker_pool_on_error(self):
+        events = []
+
+        class Records:
+            def __iter__(self):
+                yield {"text": "bad"}
+
+            def close(self):
+                events.append("records closed")
+
+        class Processor:
+            def __init__(self, _analysis):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                events.append("pool closed")
+
+            def observe(self, _record):
+                raise ValueError("invalid instance")
+
+        with patch("attention_maps.explorer.inspection_runs._EvidenceBatchProcessor", Processor):
+            with self.assertRaisesRegex(ValueError, "invalid instance"):
+                _observe_records(type("Analysis", (), {"population": 1})(), Records())
+        self.assertEqual(events, ["records closed", "pool closed"])
+
+    def test_staged_kaggle_parquet_uses_the_same_row_batch_size(self):
+        parquet = MagicMock()
+        parquet.__enter__.return_value = parquet
+        row_batch = MagicMock()
+        row_batch.to_pylist.return_value = [{"text": "नेपाल"}, {"text": "नेपाली"}]
+        parquet.iter_batches.return_value = [row_batch]
+        inventory = {
+            "format": "parquet", "provider": "kaggle",
+            "source_files": ["cached.parquet"],
+        }
+        with patch("pyarrow.parquet.ParquetFile", return_value=parquet) as open_file:
+            rows = list(iter_inspection_records(inventory, batch_size=7))
+        open_file.assert_called_once_with("cached.parquet")
+        parquet.iter_batches.assert_called_once_with(batch_size=7)
+        self.assertEqual(rows, [{"text": "नेपाल"}, {"text": "नेपाली"}])
+
+    def test_declared_instruction_instance_analyzes_all_turns(self):
+        self.write_rows([{"messages": [
+            {"role": "user", "content": "नेपाल"},
+            {"role": "assistant", "content": "राम्रो"},
+        ], "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "instruction_finetuning",
+                         "--text-column", "stale_text_column", "--sample-fraction", "1",
+                         "--sampling-runs", "1", "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["instance_definition"]["unit"], "one complete conversation")
+        self.assertEqual(report["language_status"]["sampled_characters"], len("नेपाल\n\nराम्रो"))
+        self.assertEqual(report["language_status"]["script"], "Devanagari")
+
+    def test_explicit_skip_policy_samples_only_complete_instruction_pairs(self):
+        self.write_rows([
+            {"instruction": "नेपालको राजधानी?", "output": "काठमाडौं", "language": "ne"},
+            {"instruction": "अर्को प्रश्न", "output": None, "language": "ne"},
+            {"instruction": "", "output": "उत्तर", "language": "ne"},
+            {"instruction": "नेपालीमा लेख", "input": "विषय", "output": "नेपाली उत्तर", "language": "ne"},
+        ])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "instruction_finetuning",
+                         "--invalid-instance-policy", "skip", "--sample-fraction", "1",
+                         "--sampling-runs", "2", "--concurrency", "2", "--batch-size", "1",
+                         "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        selection = report["instance_selection"]
+        self.assertEqual((selection["source_rows"], selection["eligible_rows"], selection["skipped_rows"]),
+                         (4, 2, 2))
+        self.assertEqual(selection["reason_counts"],
+                         {"assistant message has empty content": 1, "instruction must be non-empty text": 1})
+        self.assertEqual([item["source_row"] for item in selection["examples"]], [1, 2])
+        sampling = report["language_status"]["sampling"]
+        self.assertEqual((sampling["population_rows"], sampling["rows_per_run"], sampling["unique_sampled_records"]),
+                         (2, 2, 2))
+        self.assertEqual(report["language_status"]["language_coverage"], "Nepali-only")
+        self.assertEqual(report["language_status"]["script"], "Devanagari")
+        saved = read_history(self.report)[0]
+        self.assertEqual((saved["Eligible instances"], saved["Skipped instances"]), ("2", "2"))
+
+    def test_mapped_string_list_is_parsed_as_one_pretraining_document(self):
+        self.write_rows([{"paragraphs": ["नेपाल राम्रो छ", "अर्को अनुच्छेद"], "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "pretraining",
+                         "--field-map", "text=paragraphs", "--field-parser", "text=join_strings",
+                         "--sample-fraction", "1", "--sampling-runs", "1", "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["instance_definition"]["field_parsers"], {"text": "join_strings"})
+        self.assertEqual(report["language_status"]["sampled_characters"], len("नेपाल राम्रो छ\n\nअर्को अनुच्छेद"))
+        self.assertEqual(report["language_status"]["script"], "Devanagari")
+
+    def test_schema_mismatch_fails_before_saving_classification(self):
+        self.write_rows([{"text": "नेपाल", "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            code = main(["--local", str(self.source), "--training-schema", "instruction_finetuning",
+                         "--sample-fraction", "1", "--sampling-runs", "1", "--output", str(self.report)])
+        self.assertEqual(code, 1)
+        self.assertIn("Invalid instruction_finetuning instance", errors.getvalue())
+        self.assertFalse(self.report.exists())
+
+    def test_supervised_mapping_counts_input_text_without_label_or_task(self):
+        self.write_rows([{"payload": {"body": "नेपाल", "category": "positive"}, "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "task_specific_supervised",
+                         "--field-map", "text=payload.body", "--field-map", "label=payload.category",
+                         "--task-name", "sentiment", "--sample-fraction", "1", "--sampling-runs", "1",
+                         "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["instance_definition"]["field_mapping"],
+                         {"text": "payload.body", "label": "payload.category"})
+        self.assertEqual(report["language_status"]["sampled_characters"], len("नेपाल"))
+        self.assertNotIn("Latin", report["language_status"]["script_counts"])
+
+    def test_evaluation_mapping_inspects_both_sides_without_task_marker(self):
+        self.write_rows([{"corrupted": "नेपाल सन्दर छ", "clean": "नेपाल सुन्दर छ", "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "evaluation",
+                         "--field-map", "input=corrupted", "--field-map", "reference=clean",
+                         "--task-name", "ocr_proofreading", "--sample-fraction", "1",
+                         "--sampling-runs", "1", "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["instance_definition"]["schema"], "evaluation")
+        self.assertEqual(report["instance_definition"]["unit"], "one input/reference example")
+        self.assertEqual(report["language_status"]["sampled_characters"],
+                         len("नेपाल सन्दर छ\n\nनेपाल सुन्दर छ"))
+        self.assertEqual(report["language_status"]["script"], "Devanagari")
+        self.write_rows([{"corrupted": "नेपाल", "clean": None, "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(main(["--local", str(self.source), "--training-schema", "evaluation",
+                                   "--field-map", "input=corrupted", "--field-map", "reference=clean",
+                                   "--sample-fraction", "1", "--sampling-runs", "1",
+                                   "--output", str(self.root / "invalid.csv")]), 1)
+        self.assertIn("Invalid evaluation instance", errors.getvalue())
+        self.assertFalse((self.root / "invalid.csv").exists())
+
+    def test_preference_pair_counts_prompt_and_both_branches(self):
+        self.write_rows([{"prompt": "नेपाल", "chosen": "राम्रो", "rejected": "नराम्रो", "language": "ne"}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(self.source), "--training-schema", "preference_tuning",
+                         "--sample-fraction", "1", "--sampling-runs", "1", "--concurrency", "2",
+                         "--batch-size", "1", "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["instance_definition"]["unit"], "one prompt/chosen/rejected group")
+        self.assertEqual(report["language_status"]["sampled_characters"], len("नेपाल\n\nराम्रो\n\nनराम्रो"))
+        self.assertEqual(report["language_status"]["script"], "Devanagari")
+
+    def test_blank_line_documents_are_sampled_as_atomic_instances(self):
+        source = self.root / "documents.txt"
+        source.write_text("पहिलो\nदोस्रो\n\nतेस्रो\nचौथो\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = main(["--local", str(source), "--training-schema", "pretraining",
+                         "--text-record-unit", "blank_line", "--sample-fraction", "1",
+                         "--sampling-runs", "1", "--language-detection", "none",
+                         "--output", str(self.report)])
+        self.assertEqual(code, 0)
+        report = load_inspection_report(self.report)
+        self.assertEqual(report["inventory"]["rows"], 4)
+        self.assertEqual(report["language_status"]["sampling"]["population_rows"], 2)
+        self.assertEqual(report["language_status"]["sampled_records"], 2)
 
     def test_invalid_settings_and_output_collisions_fail_before_writing(self):
         self.write_rows([{"text": "नेपाल", "language": "ne"}])

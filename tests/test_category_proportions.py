@@ -1,20 +1,67 @@
 import contextlib
+import copy
 import io
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from attention_maps.explorer.inspection_history import read_history
 from attention_maps.explorer.inspection_runs import load_inspection_report
 from attention_maps.explorer.language_status import analyze_language_status
 from attention_maps.explorer.sampling_vote import RepeatedSampleAnalysis, validate_sampling_result
+from apps.components.inspection_reports import _render_category_proportions
 from tests.inspection_helpers import isolated_main as main
 
 
 class CategoryProportionTests(unittest.TestCase):
+    def test_other_and_unknown_script_records_keep_the_original_eligible_denominator(self):
+        status = analyze_language_status([
+            {"text": "中文", "language": "ne"},
+            {"text": "123", "language": "ne"},
+            {"text": "English", "language": "en"},
+        ], text_columns=["text"])
+        self.assertEqual(status["script_eligible_records"], 2)
+        self.assertEqual(status["script_outside_categories_records"], 1)
+        self.assertEqual(status["script_no_evidence_records"], 1)
+        self.assertEqual(status["script_category_percentages"]["Other"], 50.0)
+        self.assertEqual(status["script_category_percentages"]["Unknown"], 50.0)
+        validate_sampling_result(status)
+        # Moving a record between remainder buckets must not silently pass validation.
+        status["script_category_counts"].update(Other=0, Unknown=2)
+        with self.assertRaisesRegex(ValueError, "inconsistent category counts"):
+            validate_sampling_result(status)
+
+    def test_rounding_is_explained_without_adjusting_any_existing_percentage(self):
+        status = analyze_language_status([
+            {"text": "नेपाल", "language": "ne"},
+            {"text": "English", "language": "en"},
+            {"text": "हिन्दी", "language": "hi"},
+        ], text_columns=["text"])
+        before = copy.deepcopy(status)
+        st = Mock()
+        _render_category_proportions(st, status, "language_coverage")
+        rows = st.dataframe.call_args.args[0]
+        shares = {row["Category"]: row["Percent"] for row in rows}
+        self.assertEqual(shares["Nepali-only"], 33.33)
+        self.assertEqual(shares["English-only"], 33.33)
+        self.assertEqual(shares["Other"], 33.33)
+        self.assertEqual(shares["Total"], 100.0)
+        self.assertTrue(any("99.99%" in call.args[0] and "rounded" in call.args[0]
+                            for call in st.caption.call_args_list))
+        self.assertEqual(status, before)
+
+    def test_empty_denominators_do_not_claim_one_hundred_percent(self):
+        status = analyze_language_status([])
+        for key in ("language_coverage", "script"):
+            st = Mock()
+            _render_category_proportions(st, status, key)
+            self.assertEqual(st.dataframe.call_args.args[0][-1],
+                             {"Category": "Total", "Records": 0, "Percent": None})
+        validate_sampling_result(status)
+
     def test_record_categories_keep_unclassified_records_in_denominators(self):
         records = [
             {"text": "नेपाल", "language": "ne"},
@@ -30,17 +77,22 @@ class CategoryProportionTests(unittest.TestCase):
         self.assertEqual(status["sampled_records"], 8)
         self.assertEqual(status["language_category_counts"], {
             "Nepali-only": 4, "Bilingual (Nepali-English)": 1,
-            "Multilingual": 0, "English-only": 1,
+            "Multilingual": 0, "English-only": 1, "Other": 1, "Unknown": 1,
         })
         self.assertEqual(status["language_category_percentages"]["Nepali-only"], 50.0)
         self.assertEqual((status["language_no_evidence_records"],
                           status["language_outside_categories_records"]), (1, 1))
+        self.assertEqual(status["language_category_percentages"]["Other"], 12.5)
         self.assertEqual(status["script_eligible_records"], 5)
         self.assertEqual(status["script_category_counts"], {
             "Devanagari": 1, "Mixed (Devanagari + romanized)": 1,
-            "Romanized": 1, "Mixed (Nepali + English)": 1,
+            "Romanized": 1, "Mixed (Nepali + English)": 1, "Other": 0, "Unknown": 1,
         })
-        self.assertTrue(all(value == 20.0 for value in status["script_category_percentages"].values()))
+        self.assertEqual(status["script_category_percentages"]["Unknown"], 20.0)
+        self.assertEqual(sum(status["language_category_counts"].values()), 8)
+        self.assertEqual(sum(status["script_category_counts"].values()), 5)
+        self.assertEqual(sum(status["language_category_percentages"].values()), 100.0)
+        self.assertEqual(sum(status["script_category_percentages"].values()), 100.0)
         self.assertEqual((status["script_no_evidence_records"],
                           status["script_outside_categories_records"]), (1, 0))
 
@@ -89,6 +141,8 @@ class CategoryProportionTests(unittest.TestCase):
             self.assertEqual(json.loads(row["Nepali script category %"])["Devanagari"], 100.0)
             self.assertEqual(report["language_status"]["language_no_evidence_records"], 1)
             self.assertEqual(report["language_status"]["language_outside_categories_records"], 1)
+            self.assertEqual(json.loads(row["Language category %"])["Other"], 25.0)
+            self.assertEqual(json.loads(row["Language category %"])["Unknown"], 25.0)
             from streamlit.testing.v1 import AppTest
             app_path = Path(__file__).resolve().parents[1] / "apps/dataset_explorer.py"
             with patch.dict(os.environ, {"DATASET_INSPECTION_REPORT": str(sheet)}):
@@ -98,6 +152,10 @@ class CategoryProportionTests(unittest.TestCase):
                              if {"Category", "Records", "Percent"}.issubset(item.value.columns)]
             self.assertEqual(len(distributions), 2)
             self.assertEqual(distributions[0].set_index("Category").loc["Nepali-only", "Percent"], 25.0)
+            self.assertEqual(distributions[0].set_index("Category").loc["Other", "Percent"], 25.0)
+            self.assertEqual(distributions[0].set_index("Category").loc["Unknown", "Percent"], 25.0)
+            self.assertEqual(distributions[0].set_index("Category").loc["Total", "Records"], 4)
+            self.assertEqual(distributions[0].set_index("Category").loc["Total", "Percent"], 100.0)
             self.assertEqual(distributions[1].set_index("Category").loc["Devanagari", "Percent"], 100.0)
             per_run = [item.value for item in app.dataframe
                        if "Run" in item.value.columns and

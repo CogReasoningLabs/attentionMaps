@@ -9,6 +9,8 @@ from .kaggle import (
 )
 from .schemas import (
     D2_SUPPORTED_USE_CASES,
+    EVALUATION_SCHEMA,
+    STANDARD_DATASET_SCHEMAS,
     INSTRUCTION_FINETUNING_SCHEMA,
     PREFERENCE_TUNING_SCHEMA,
     PRETRAINING_SCHEMA,
@@ -20,6 +22,8 @@ from .schemas import (
 
 __all__ = [
     "D2_SUPPORTED_USE_CASES",
+    "EVALUATION_SCHEMA",
+    "STANDARD_DATASET_SCHEMAS",
     "INSTRUCTION_FINETUNING_SCHEMA",
     "KaggleDatasetError",
     "PREFERENCE_TUNING_SCHEMA",

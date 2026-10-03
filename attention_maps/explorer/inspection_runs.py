@@ -15,6 +15,7 @@ from itertools import islice
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from types import SimpleNamespace
 
 from attention_maps.eda.text import devanagari_ratio, extract_text
 
@@ -34,31 +35,61 @@ REPORT_TYPE = "dataset_inspection"
 REPORT_VERSION = 1
 
 
-def iter_inspection_records(inventory: dict, *, token: str | None = None) -> Iterator[dict]:
+def iter_inspection_records(inventory: dict, *, token: str | None = None,
+                            batch_size: int = 1024) -> Iterator[dict]:
     """Read selected records, applying metadata filters before any consumer samples."""
-    for record in _iter_source_records(inventory, token=token):
-        if matches_row_filters(record, inventory.get("row_filters")):
-            yield record
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError("batch_size must be a positive integer")
+    source_records = _iter_source_records(inventory, token=token, batch_size=batch_size)
+    try:
+        for record in source_records:
+            if matches_row_filters(record, inventory.get("row_filters")):
+                yield record
+    finally:
+        source_records.close()
 
 
-def _iter_source_records(inventory: dict, *, token: str | None = None) -> Iterator[dict]:
+def _iter_source_records(inventory: dict, *, token: str | None = None,
+                         batch_size: int = 1024) -> Iterator[dict]:
     """Read exactly the chosen source files, without explorer-only row metadata."""
     kind = inventory["format"]
     if kind == "huggingface":
-        from datasets import load_dataset
+        from .huggingface import load_selected_huggingface_stream
 
         shards = inventory.get("dataset_shards")
         if not shards:
             raise ValueError("Inspection requires an explicit, non-empty resolved shard selection")
-        records = load_dataset(
+        records = load_selected_huggingface_stream(
             inventory["dataset_id"], inventory.get("dataset_config"),
-            split=inventory["dataset_split"], revision=inventory.get("dataset_revision"),
-            data_files={inventory["dataset_split"]: list(shards)}, streaming=True, token=token,
+            inventory["dataset_split"], inventory.get("dataset_revision"), shards,
+            loader=inventory.get("dataset_loader"), token=token,
         )
-        for record in records:
-            column = inventory.get("filter_column")
-            if not column or record.get(column) == inventory.get("filter_value"):
-                yield dict(record)
+        # IterableDataset.iter is the installed datasets library's native
+        # batch iterator. Test doubles and older row-only iterables still work.
+        native_batches = getattr(records, "iter", None)
+        if callable(native_batches):
+            batches = native_batches(batch_size=batch_size)
+            try:
+                for batch in batches:
+                    if not isinstance(batch, dict):
+                        raise ValueError("Hugging Face batch must map columns to record lists")
+                    lengths = {len(values) for values in batch.values()}
+                    if len(lengths) > 1:
+                        raise ValueError("Hugging Face batch has mismatched column lengths")
+                    for index in range(next(iter(lengths), 0)):
+                        record = {column: values[index] for column, values in batch.items()}
+                        column = inventory.get("filter_column")
+                        if not column or record.get(column) == inventory.get("filter_value"):
+                            yield record
+            finally:
+                close = getattr(batches, "close", None)
+                if close is not None:
+                    close()
+        else:
+            for record in records:
+                column = inventory.get("filter_column")
+                if not column or record.get(column) == inventory.get("filter_value"):
+                    yield dict(record)
     elif kind == "parquet":
         import pyarrow.parquet as pq
 
@@ -67,7 +98,7 @@ def _iter_source_records(inventory: dict, *, token: str | None = None) -> Iterat
         ))
         for path in paths:
             with pq.ParquetFile(path) as parquet:
-                for batch in parquet.iter_batches(batch_size=1024):
+                for batch in parquet.iter_batches(batch_size=batch_size):
                     yield from batch.to_pylist()
     elif kind == "json":
         yield from json.loads(Path(inventory["path"]).read_text(encoding="utf-8"))
@@ -109,7 +140,7 @@ def _add_sample(sample: list, record: dict, count: int, size: int, rng: random.R
 
 
 def _filter_records(inventory: dict, settings: dict, fields: list[str], token: str | None,
-                    analysis: RepeatedSampleAnalysis | None = None) -> tuple:
+                    analysis: RepeatedSampleAnalysis | None = None, instance_definition=None) -> tuple:
     destination = Path(settings["filtered_output"])
     destination.parent.mkdir(parents=True, exist_ok=True)
     source_sample, kept_sample = [], []
@@ -128,7 +159,8 @@ def _filter_records(inventory: dict, settings: dict, fields: list[str], token: s
                 total = min(total, limit)
             processor = _EvidenceBatchProcessor(analysis) if analysis is not None else nullcontext()
             with processor as evidence_processor, inspection_progress("Filter selected rows", total=total) as progress:
-                for record in iter_inspection_records(inventory, token=token):
+                for record in _instance_records(inventory, instance_definition, token=token,
+                                                batch_size=settings.get("batch_size", 1024)):
                     if limit is not None and scanned >= limit:
                         exhausted = False
                         break
@@ -137,7 +169,13 @@ def _filter_records(inventory: dict, settings: dict, fields: list[str], token: s
                         evidence_processor.observe(record)
                     else:
                         _add_sample(source_sample, record, scanned, settings["sample_size"], source_rng)
-                    text = extract_text(record, fields)
+                    if instance_definition is not None:
+                        from .semantic_instances import inspection_instance_text
+                        text = inspection_instance_text(record, instance_definition, source_row=scanned - 1,
+                                                        source_identity=inventory.get("dataset_id") or inventory.get("path") or "inspection",
+                                                        source_split=inventory.get("dataset_split"))
+                    else:
+                        text = extract_text(record, fields)
                     ratio = devanagari_ratio(text)
                     # Empty/number-only text never qualifies, even for a zero threshold.
                     if ratio > 0 and ratio >= settings["min_devanagari_ratio"]:
@@ -175,6 +213,26 @@ def _filter_records(inventory: dict, settings: dict, fields: list[str], token: s
     }
 
 
+def _instance_records(inventory, definition, *, token=None, batch_size=1024):
+    if definition is None:
+        return iter_inspection_records(inventory, token=token, batch_size=batch_size)
+    from .semantic_instances import iter_instance_records
+    return iter_instance_records(inventory, definition, token=token, batch_size=batch_size)
+
+
+def _status_records(records, definition, inventory):
+    if definition is None:
+        return records
+    from .semantic_instances import inspection_instance_text
+    identity = inventory.get("dataset_id") or inventory.get("path") or "inspection"
+    return [
+        {**record, "__inspection_text": inspection_instance_text(
+            record, definition, source_row=index, source_identity=identity,
+            source_split=inventory.get("dataset_split"))}
+        for index, record in enumerate(records)
+    ]
+
+
 def build_inspection_report(inventory: dict, settings: dict, *, token: str | None = None) -> dict:
     """Single execution path for CLI reports; UI consumers only read this result."""
     settings = {**settings, **resolve_thresholds(settings), **detection_settings(settings)}
@@ -189,6 +247,13 @@ def build_inspection_report(inventory: dict, settings: dict, *, token: str | Non
     fields = [] if metadata_only else list(settings.get("text_columns") or text_columns(inventory["schema"]))
     if not settings.get("text_columns"):
         fields = [field for field in fields if field not in inventory.get("row_filters", {})]
+    instance_definition = None
+    if not metadata_only and settings.get("training_schema"):
+        from .semantic_instances import resolve_instance_definition
+        instance_definition = resolve_instance_definition(inventory, fields, SimpleNamespace(**settings))
+        fields = instance_definition["text_columns"]
+        if inventory.get("row_filters") and instance_definition["text_record_unit"] == "blank_line":
+            raise ValueError("blank_line instances cannot be selected with row_filters")
     roots = list(dict.fromkeys(field.split(".")[0] for field in fields))
     unknown = set(roots) - set(inventory["columns"])
     if unknown:
@@ -196,45 +261,62 @@ def build_inspection_report(inventory: dict, settings: dict, *, token: str | Non
     columns = tuple(dict.fromkeys([*roots, *(field for field in LANGUAGE_FIELDS if field in inventory["columns"])]))
     settings = dict(settings) if metadata_only else {**settings, "text_columns": fields}
     if settings.get("row_filters"):
-        inventory = _count_row_selection(inventory, token)
+        inventory = _count_row_selection(inventory, token, settings.get("batch_size", 1024))
+    instance_selection = None
+    eligible_mask = None
+    if settings.get("invalid_instance_policy") == "skip":
+        instance_selection, eligible_mask = _count_valid_instances(
+            inventory, instance_definition, token=token, batch_size=settings.get("batch_size", 1024))
     filtered = None
     status = None
     if metadata_only:
         records = []
     elif settings.get("sample_fraction") is not None:
-        analysis = _prepare_repeated_analysis(inventory, settings, fields, token)
+        analysis = _prepare_repeated_analysis(
+            inventory, settings, fields, token, instance_definition,
+            eligible_rows=instance_selection["eligible_rows"] if instance_selection else None)
         if settings.get("min_devanagari_ratio") is not None:
-            if not fields:
+            if not fields and instance_definition is None:
                 raise ValueError("Filtering requires --text-column or detectable text fields")
-            _, _, filtered = _filter_records(inventory, settings, fields, token, analysis)
+            _, _, filtered = _filter_records(inventory, settings, fields, token, analysis, instance_definition)
             kept_inventory = {**inventory, "format": "jsonl", "path": filtered["output_path"],
                               "rows": filtered["rows_kept"]}
+            kept_definition = ({**instance_definition, "text_record_unit": "source_row"}
+                               if instance_definition is not None else None)
             kept_analysis = RepeatedSampleAnalysis(kept_inventory, settings, fields, filtered["rows_kept"],
-                                                   population_basis="filtered output count")
-            _observe_records(kept_analysis, iter_inspection_records(kept_inventory))
+                                                   population_basis="filtered output count", instance_definition=kept_definition)
+            _observe_records(kept_analysis, _instance_records(
+                kept_inventory, kept_definition, batch_size=settings.get("batch_size", 1024)))
             filtered["language_status"] = kept_analysis.finish()
         else:
-            _observe_records(analysis, iter_inspection_records(inventory, token=token))
+            source_records = _instance_records(
+                inventory, instance_definition, token=token, batch_size=settings.get("batch_size", 1024))
+            _observe_records(analysis, _eligible_instance_records(source_records, eligible_mask)
+                             if eligible_mask is not None else source_records)
         status = analysis.finish()
     elif settings.get("min_devanagari_ratio") is not None:
-        if not fields:
+        if not fields and instance_definition is None:
             raise ValueError("Filtering requires --text-column or detectable text fields")
-        records, kept, filtered = _filter_records(inventory, settings, fields, token)
+        records, kept, filtered = _filter_records(inventory, settings, fields, token, instance_definition=instance_definition)
         filtered["language_status"] = inventory_language_status(
-            inventory, kept, text_columns=fields, declared_languages=settings.get("languages") or (), thresholds=resolve_thresholds(settings), detector=detector,
+            inventory, _status_records(kept, instance_definition, inventory),
+            text_columns=["__inspection_text"] if instance_definition else fields, declared_languages=settings.get("languages") or (), thresholds=resolve_thresholds(settings), detector=detector,
         )
-    elif inventory.get("row_filters"):
+    elif inventory.get("row_filters") or instance_definition is not None:
         records = []
         rng = random.Random(settings["seed"])
-        with inspection_progress("Sample selected rows", total=inventory.get("rows")) as progress:
-            for count, record in enumerate(iter_inspection_records(inventory, token=token), 1):
+        known_total = None if instance_definition and instance_definition["text_record_unit"] == "blank_line" else inventory.get("rows")
+        with inspection_progress("Sample selected rows", total=known_total) as progress:
+            for count, record in enumerate(_instance_records(
+                    inventory, instance_definition, token=token, batch_size=settings.get("batch_size", 1024)), 1):
                 _add_sample(records, record, count, settings["sample_size"], rng)
                 progress.update(1)
     else:
         records = sample_dataset_rows(inventory, settings["sample_size"], settings["seed"], columns) if columns and settings["sample_size"] else []
     if status is None:
         status = inventory_language_status(
-            inventory, records, text_columns=fields, declared_languages=settings.get("languages") or (), thresholds=resolve_thresholds(settings), detector=detector,
+            inventory, _status_records(records, instance_definition, inventory),
+            text_columns=["__inspection_text"] if instance_definition else fields, declared_languages=settings.get("languages") or (), thresholds=resolve_thresholds(settings), detector=detector,
         )
     sample_scope = "language_selected_sample" if inventory.get("row_filters") else "selected_source_sample"
     if metadata_only:
@@ -244,18 +326,19 @@ def build_inspection_report(inventory: dict, settings: dict, *, token: str | Non
     return {
         "report_type": REPORT_TYPE, "report_version": REPORT_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "settings": settings, "inventory": inventory, "language_status": status,
+        "settings": settings, "inventory": inventory, "instance_definition": instance_definition, "language_status": status,
         "sample_scope": sample_scope,
+        "instance_selection": instance_selection,
         "filter_result": filtered,
     }
 
 
-def _count_row_selection(inventory: dict, token) -> dict:
+def _count_row_selection(inventory: dict, token, batch_size: int = 1024) -> dict:
     print("Selecting matching language/metadata rows before sampling…", file=sys.stderr)
     scanned = matched = 0
     examples = {column: [] for column in inventory["row_filters"]}
     with inspection_progress("Match source rows", total=inventory.get("rows")) as progress:
-        for record in _iter_source_records(inventory, token=token):
+        for record in _iter_source_records(inventory, token=token, batch_size=batch_size):
             scanned += 1
             for column, values in examples.items():
                 value = str(field_value(record, column))[:120]
@@ -312,7 +395,9 @@ class _EvidenceBatchProcessor:
         self.pending.add(self.executor.submit(
             analyze_selected_batch, self.batch, self.analysis.fields,
             tuple(self.analysis.context["hf_selection"]), self.analysis.thresholds,
-            len(self.analysis.evidence),
+            len(self.analysis.evidence), self.analysis.instance_definition,
+            self.analysis.source_identity, self.analysis.source_split,
+            self.analysis.worker_settings["seed"],
         ))
         self.batch = []
         if len(self.pending) >= 2 * self.analysis.concurrency:
@@ -324,7 +409,7 @@ class _EvidenceBatchProcessor:
             return
         selected = self.analysis.select_record(record)
         if selected is not None:
-            self.batch.append(selected)
+            self.batch.append((*selected, self.analysis.scanned - 1))
             if len(self.batch) >= self.analysis.batch_size:
                 self._submit_batch()
 
@@ -336,28 +421,89 @@ class _EvidenceBatchProcessor:
 
 
 def _observe_records(analysis: RepeatedSampleAnalysis, records) -> None:
-    try:
-        with _EvidenceBatchProcessor(analysis) as processor, \
-                inspection_progress("Sample and classify", total=analysis.population) as progress:
+    with _EvidenceBatchProcessor(analysis) as processor, \
+            inspection_progress("Sample and classify", total=analysis.population) as progress:
+        try:
             for record in records:
                 processor.observe(record)
                 progress.update(1)
                 if progress.disable and analysis.scanned % 100000 == 0:
                     print(f"Inspection: {analysis.scanned:,} / {analysis.population:,} records scanned", file=sys.stderr)
             processor.finish()
+        finally:
+            # Release an active streaming reader before shutting down workers;
+            # otherwise its background I/O can survive exception unwinding.
+            close = getattr(records, "close", None)
+            if close is not None:
+                close()
+
+
+def _count_valid_instances(inventory: dict, definition: dict, *, token=None, batch_size=1024):
+    """Validate every selected source instance before drawing exact random samples."""
+    from .semantic_instances import inspection_instance_text
+
+    mask = bytearray()
+    reasons = {}
+    examples = []
+    records = _instance_records(inventory, definition, token=token, batch_size=batch_size)
+    try:
+        with inspection_progress("Validate instances", total=inventory.get("rows")) as progress:
+            for source_row, record in enumerate(records):
+                try:
+                    inspection_instance_text(
+                        record, definition, source_row=source_row,
+                        source_identity=inventory.get("dataset_id") or inventory.get("path") or "inspection",
+                        source_split=inventory.get("dataset_split"))
+                except ValueError as error:
+                    reason = str(error)
+                    mask.append(0)
+                    reasons[reason] = reasons.get(reason, 0) + 1
+                    if len(examples) < 10:
+                        examples.append({"source_row": source_row, "reason": reason})
+                else:
+                    mask.append(1)
+                progress.update(1)
     finally:
-        close = getattr(records, "close", None)
-        if close is not None:
-            close()
+        records.close()
+    source_rows = len(mask)
+    if definition["text_record_unit"] != "blank_line" and inventory.get("rows") is not None and source_rows != inventory["rows"]:
+        raise ValueError("Source row count changed during instance validation; report was not published")
+    eligible = mask.count(1)
+    return ({"policy": "skip", "source_rows": source_rows, "eligible_rows": eligible,
+             "skipped_rows": source_rows - eligible, "reason_counts": reasons, "examples": examples}, mask)
 
 
-def _prepare_repeated_analysis(inventory: dict, settings: dict, fields: list[str], token) -> RepeatedSampleAnalysis:
-    population = inventory.get("rows")
+def _eligible_instance_records(records, mask: bytearray):
+    """Replay a pinned source, excluding only positions rejected in validation."""
+    scanned = 0
+    try:
+        for record in records:
+            if scanned >= len(mask):
+                raise ValueError("Source row count changed after instance validation; report was not published")
+            if mask[scanned]:
+                yield record
+            scanned += 1
+        if scanned != len(mask):
+            raise ValueError("Source row count changed after instance validation; report was not published")
+    finally:
+        records.close()
+
+
+def _prepare_repeated_analysis(inventory: dict, settings: dict, fields: list[str], token,
+                               instance_definition=None, *, eligible_rows=None) -> RepeatedSampleAnalysis:
+    population = eligible_rows if eligible_rows is not None else inventory.get("rows")
+    if instance_definition and instance_definition["text_record_unit"] == "blank_line":
+        population = None  # Source inventory counts lines; sample complete documents.
     limit = settings.get("max_records") if settings.get("min_devanagari_ratio") is not None else None
-    basis = "matching row count before sampling" if inventory.get("row_selection") else "source metadata"
+    basis = ("valid instances after explicit skip policy" if eligible_rows is not None
+             else "matching row count before sampling" if inventory.get("row_selection")
+             else "source metadata")
+    if instance_definition and instance_definition["text_record_unit"] == "blank_line":
+        basis = "counting complete blank-line documents"
     if population is None:
         print("Counting the selected source population before exact random sampling…", file=sys.stderr)
-        records = iter_inspection_records(inventory, token=token)
+        records = _instance_records(inventory, instance_definition, token=token,
+                                    batch_size=settings.get("batch_size", 1024))
         try:
             population = 0
             with inspection_progress("Count selected rows") as progress:
@@ -373,7 +519,8 @@ def _prepare_repeated_analysis(inventory: dict, settings: dict, fields: list[str
         population = min(population, limit)
     if limit is not None:
         basis += "; filter scan scope (possibly a limited prefix)"
-    return RepeatedSampleAnalysis(inventory, settings, fields, population, population_basis=basis)
+    return RepeatedSampleAnalysis(inventory, settings, fields, population, population_basis=basis,
+                                  instance_definition=instance_definition)
 
 
 def write_inspection_report(path: Path, report: dict) -> None:
@@ -433,6 +580,20 @@ def validate_inspection_report(report: dict) -> dict:
                 or not selection.get("filters") or selection["filters"] != inventory.get("row_filters")):
             raise ValueError("Inspection report has invalid pre-sampling row selection evidence")
         validate_row_filters(selection["filters"])
+    instance_selection = report.get("instance_selection")
+    if instance_selection is not None:
+        if (not isinstance(instance_selection, dict) or instance_selection.get("policy") != "skip"
+                or not all(type(instance_selection.get(key)) is int and instance_selection[key] >= 0
+                           for key in ("source_rows", "eligible_rows", "skipped_rows"))
+                or instance_selection["source_rows"] != instance_selection["eligible_rows"] + instance_selection["skipped_rows"]
+                or not isinstance(instance_selection.get("reason_counts"), dict)
+                or not isinstance(instance_selection.get("examples"), list)
+                or sum(instance_selection["reason_counts"].values()) != instance_selection["skipped_rows"]):
+            raise ValueError("Inspection report has invalid instance-selection counts")
+        definition = report.get("instance_definition") or {}
+        if (definition.get("text_record_unit") != "blank_line" and inventory.get("rows") is not None
+                and instance_selection["source_rows"] != inventory["rows"]):
+            raise ValueError("Inspection report has inconsistent source and instance counts")
     statuses = [report.get("language_status")]
     filtered = report.get("filter_result")
     if filtered is not None:
@@ -455,4 +616,8 @@ def validate_inspection_report(report: dict) -> dict:
         raise ValueError("Inspection report is missing language/script evidence")
     for status in statuses:
         validate_sampling_result(status)
+    if instance_selection is not None:
+        sampling = report["language_status"].get("sampling", {})
+        if sampling.get("population_rows") != instance_selection["eligible_rows"]:
+            raise ValueError("Inspection report sampling population does not match valid instances")
     return report

@@ -48,6 +48,13 @@ class SourceImportTests(unittest.TestCase):
         self.assertEqual(spec.primary_purpose, "Task-specific fine-tuning")
         self.assertIn("@abc123", str(spec.location))
 
+    def test_evaluation_schema_has_evaluation_catalog_purpose(self):
+        spec = huggingface_source_spec(
+            "owner/evaluation", schema="evaluation", config="default", split="test",
+        )
+        self.assertEqual(spec.primary_purpose, "Evaluation / benchmark")
+        self.assertIn("evaluation", spec.tags)
+
     def test_discovers_and_builds_staged_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

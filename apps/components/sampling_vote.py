@@ -2,11 +2,12 @@
 
 from typing import Any
 
-from attention_maps.explorer.language_status import LANGUAGE_COVERAGE_OPTIONS, SCRIPT_OPTIONS
+from attention_maps.explorer.language_status import SCRIPT_OPTIONS, saved_language_options
+from attention_maps.explorer.category_proportions import category_breakdown
 
 
 def _category_value(status: dict, key: str) -> str:
-    allowed = LANGUAGE_COVERAGE_OPTIONS if key == "language_coverage" else SCRIPT_OPTIONS
+    allowed = saved_language_options(status) if key == "language_coverage" else SCRIPT_OPTIONS
     return status[key] if status[key] in allowed else "—"
 
 
@@ -48,12 +49,14 @@ def render_sampling_vote(st: Any, status: dict) -> None:
         if all("language_category_percentages" in run and "script_category_percentages" in run
                for run in sampling["run_results"]):
             st.caption("Language category % by run · denominator: sampled records in that run")
-            st.dataframe([{"Run": run["run"], **run["language_category_percentages"],
-                           "No language evidence (records)": run["language_no_evidence_records"],
-                           "Outside listed categories (records)": run["language_outside_categories_records"]}
-                          for run in sampling["run_results"]], hide_index=True, width="stretch")
+            language_rows = []
+            for run in sampling["run_results"]:
+                language_rows.append({"Run": run["run"], **category_breakdown(run, "language")[1],
+                                      "No language evidence (records)": run["language_no_evidence_records"],
+                                      "Outside listed categories (records)": run["language_outside_categories_records"]})
+            st.dataframe(language_rows, hide_index=True, width="stretch")
             st.caption("Nepali script category % by run · denominator: Nepali-eligible records in that run")
-            st.dataframe([{"Run": run["run"], **run["script_category_percentages"],
+            st.dataframe([{"Run": run["run"], **category_breakdown(run, "script")[1],
                            "No script evidence (records)": run["script_no_evidence_records"],
                            "Outside listed categories (records)": run["script_outside_categories_records"]}
                           for run in sampling["run_results"]], hide_index=True, width="stretch")
@@ -65,7 +68,7 @@ def render_sampling_vote(st: Any, status: dict) -> None:
                  "sources_disagree": run.get("language_evidence_conflict", False)}
                 for run in sampling["run_results"]
             ]}, expanded=False)
-        pooled_language = _category_value({"language_coverage": status["pooled_language_coverage"]}, "language_coverage")
+        pooled_language = _category_value({**status, "language_coverage": status["pooled_language_coverage"]}, "language_coverage")
         pooled_script = _category_value({"script": status["pooled_script"]}, "script")
         st.caption(
             f"Pooled unique-sample evidence: {pooled_language} · {pooled_script}. "

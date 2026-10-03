@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
+
 from .sampling_vote import SAMPLING_STRATEGIES
+from .field_parsers import validate_field_parsers
 from .row_selection import validate_row_filters
 from .language_detection import DETECTION_DEFAULTS, detection_settings
 from .classification_thresholds import DEFAULT_THRESHOLDS, resolve_thresholds
@@ -13,7 +16,7 @@ SETTINGS_KEYS = {
     "row_filters", "history_sheet", "record_history", "provider", "dataset", "dataset_file", "local", "revision", "config", "split", "shards", "sample_size",
     "text_columns", "languages", "seed", "output", "min_devanagari_ratio",
     "max_records", "filtered_output", "overwrite", "formats_only", "sample_fraction", "sampling_runs", "sampling_method",
-    "concurrency", "batch_size",
+    "concurrency", "batch_size", "training_schema", "invalid_instance_policy", "text_record_unit", "field_mapping", "field_parsers", "task_name",
 }
 
 SETTINGS_KEYS.update(DEFAULT_THRESHOLDS)
@@ -42,6 +45,31 @@ def load_inspection_settings(path: Path) -> dict:
 
 
 def validate_inspection_settings(settings: dict, *, listing: bool = False) -> None:
+    schema = settings.get("training_schema")
+    if schema is not None and schema not in {item.key for item in STANDARD_DATASET_SCHEMAS}:
+        raise ValueError("training_schema must be a supported dataset instance schema")
+    policy = settings.get("invalid_instance_policy", "error")
+    if policy not in {"error", "skip"}:
+        raise ValueError("invalid_instance_policy must be error or skip")
+    if policy == "skip":
+        if not schema or settings.get("formats_only"):
+            raise ValueError("invalid_instance_policy: skip requires a schema and record analysis")
+        if settings.get("sample_fraction") is None or settings.get("min_devanagari_ratio") is not None:
+            raise ValueError("invalid_instance_policy: skip currently requires percentage sampling without export filtering")
+    unit = settings.get("text_record_unit", "line")
+    if unit not in {"line", "blank_line"}:
+        raise ValueError("text_record_unit must be line or blank_line")
+    mapping = settings.get("field_mapping") or {}
+    allowed_fields = {field for item in STANDARD_DATASET_SCHEMAS for field in item.required_fields}
+    if not isinstance(mapping, dict) or any(
+        key not in allowed_fields or not isinstance(value, str) or not value.strip()
+        for key, value in mapping.items()
+    ):
+        raise ValueError("field_mapping must map canonical fields to non-empty source paths")
+    validate_field_parsers(settings.get("field_parsers"))
+    task = settings.get("task_name")
+    if task is not None and (not isinstance(task, str) or not task.strip()):
+        raise ValueError("task_name must be a non-empty string or null")
     resolve_thresholds(settings)
     detection_settings(settings)
     validate_row_filters(settings.get("row_filters"))

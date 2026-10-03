@@ -3,6 +3,7 @@
 import csv
 from contextlib import contextmanager
 import fcntl
+import io
 import json
 import os
 from pathlib import Path
@@ -10,10 +11,10 @@ import tempfile
 import uuid
 
 from .inspection_runs import load_inspection_report, validate_inspection_report
-from .language_status import LANGUAGE_COVERAGE_OPTIONS, SCRIPT_OPTIONS
+from .language_status import SCRIPT_OPTIONS, saved_language_options
 
 DEFAULT_HISTORY_SHEET = Path(__file__).resolve().parents[2] / "artifacts/dataset_inspection/history.csv"
-FIELDS = (
+PRE_TIMING_FIELDS = (
     "Run ID", "Completed at", "Provider", "Dataset", "Configuration", "Split", "Revision/version",
     "Selected files", "File formats", "Source rows", "Source bytes", "Sample scope", "Text fields",
     "Language Coverage", "Script", "Language category %", "Nepali script category %",
@@ -24,7 +25,12 @@ FIELDS = (
     "Row filters", "Rows before language selection", "Rows after language selection", "Report JSON",
 )
 
-PRE_PROPORTION_FIELDS = tuple(field for field in FIELDS
+PRE_INSTANCE_FIELDS = PRE_TIMING_FIELDS[:2] + ("Started at", "Processing seconds") + PRE_TIMING_FIELDS[2:]
+_source_rows_index = PRE_INSTANCE_FIELDS.index("Source rows") + 1
+FIELDS = (PRE_INSTANCE_FIELDS[:_source_rows_index] + ("Eligible instances", "Skipped instances")
+          + PRE_INSTANCE_FIELDS[_source_rows_index:])
+
+PRE_PROPORTION_FIELDS = tuple(field for field in PRE_TIMING_FIELDS
                               if field not in {"Language category %", "Nepali script category %"})
 PRE_SELECTION_FIELDS = (*PRE_PROPORTION_FIELDS[:-4], "Report JSON")
 LEGACY_FIELDS = (*PRE_SELECTION_FIELDS[:-1], "Report")
@@ -42,22 +48,27 @@ def decision_text(status, key):
             f"(at least {threshold} of {vote['runs']} votes). Abstentions count in the total.")
 
 
-def read_history(sheet):
+def read_history(sheet, *, allow_additive_fields=False, preserve_values=False):
     sheet = Path(sheet).expanduser().resolve()
     if not sheet.exists():
         return []
     with sheet.open(encoding="utf-8-sig", newline="") as stream:
         csv.field_size_limit(max(csv.field_size_limit(), 64 * 1024 * 1024))
-        reader = csv.DictReader(stream, skipinitialspace=True)
+        reader = csv.DictReader(stream, skipinitialspace=not preserve_values)
         if reader.fieldnames:
             reader.fieldnames = [name.strip() for name in reader.fieldnames]
-        if reader.fieldnames not in (list(FIELDS), list(PRE_PROPORTION_FIELDS),
-                                        list(PRE_SELECTION_FIELDS), list(LEGACY_FIELDS)):
-            raise ValueError("History sheet has an incompatible header; choose a new CSV path")
+        known_headers = (FIELDS, PRE_INSTANCE_FIELDS, PRE_TIMING_FIELDS,
+                         PRE_PROPORTION_FIELDS, PRE_SELECTION_FIELDS, LEGACY_FIELDS)
+        exact_match = any(reader.fieldnames == list(header) for header in known_headers)
+        additive_match = (allow_additive_fields and reader.fieldnames is not None
+                          and len(reader.fieldnames) == len(set(reader.fieldnames))
+                          and set(FIELDS).issubset(reader.fieldnames))
+        if not (exact_match or additive_match):
+            raise ValueError("History sheet has an incompatible header; check the selected CSV path or restart an older Streamlit server")
         rows = list(reader)
         if any(None in row or any(value is None for value in row.values()) for row in rows):
             raise ValueError("History sheet contains an incomplete row")
-        return [{key: value.strip() for key, value in row.items()} for row in rows]
+        return rows if preserve_values else [{key: value.strip() for key, value in row.items()} for row in rows]
 
 
 def _cell(value):
@@ -75,32 +86,29 @@ def _category_cell(value, allowed):
     return value if value in allowed else ""
 
 
-def _category_summary(row):
-    row = dict(row)
-    for column, allowed in (("Language Coverage", LANGUAGE_COVERAGE_OPTIONS),
-                            ("Filtered Language Coverage", LANGUAGE_COVERAGE_OPTIONS),
-                            ("Script", SCRIPT_OPTIONS), ("Filtered Script", SCRIPT_OPTIONS)):
-        row[column] = _category_cell(row.get(column), allowed)
-    return row
-
-
 def history_row(report, run_id):
     inventory, settings, status = report["inventory"], report["settings"], report["language_status"]
     sampling, votes = status.get("sampling", {}), status.get("voting", {})
     filtered = report.get("filter_result") or {}
+    instance_selection = report.get("instance_selection") or {}
     filtered_status = filtered.get("language_status", {})
     formats = inventory.get("file_formats") or {}
     row = {
         "Run ID": run_id, "Completed at": report.get("created_at", ""),
+        "Started at": report.get("started_at", ""),
+        "Processing seconds": report.get("processing_seconds", ""),
         "Provider": settings.get("provider") or inventory.get("provider", "local"),
         "Dataset": inventory.get("dataset_id") or settings.get("dataset") or settings.get("local") or inventory.get("path"),
         "Configuration": inventory.get("dataset_config"), "Split": inventory.get("dataset_split"),
         "Revision/version": inventory.get("dataset_revision") or inventory.get("dataset_version"),
         "Selected files": _json(inventory.get("dataset_shards") or inventory.get("selected_files") or inventory.get("source_files") or []),
         "File formats": _json(formats.get("groups", [])),
-        "Source rows": inventory.get("rows"), "Source bytes": inventory.get("bytes"),
+        "Source rows": inventory.get("rows"),
+        "Eligible instances": instance_selection.get("eligible_rows", ""),
+        "Skipped instances": instance_selection.get("skipped_rows", ""),
+        "Source bytes": inventory.get("bytes"),
         "Sample scope": report.get("sample_scope"), "Text fields": _json(settings.get("text_columns")),
-        "Language Coverage": _category_cell(status["language_coverage"], LANGUAGE_COVERAGE_OPTIONS),
+        "Language Coverage": _category_cell(status["language_coverage"], saved_language_options(status)),
         "Script": _category_cell(status["script"], SCRIPT_OPTIONS),
         "Language category %": _json(status.get("language_category_percentages", {})),
         "Nepali script category %": _json(status.get("script_category_percentages", {})),
@@ -114,7 +122,7 @@ def history_row(report, run_id):
         "Script votes": _json(votes.get("script", {}).get("counts", {})),
         "Script decision": decision_text(status, "script"),
         "Per-run votes": _json(sampling.get("run_results", [])),
-        "Filtered Language Coverage": _category_cell(filtered_status.get("language_coverage"), LANGUAGE_COVERAGE_OPTIONS),
+        "Filtered Language Coverage": _category_cell(filtered_status.get("language_coverage"), saved_language_options(filtered_status)),
         "Filtered Script": _category_cell(filtered_status.get("script"), SCRIPT_OPTIONS),
         "Filtered Devanagari %": filtered_status.get("script_percentages", {}).get("Devanagari", ""),
         "Filtered rows kept": filtered.get("rows_kept"), "Report JSON": _json(report),
@@ -165,12 +173,62 @@ def append_history(report, sheet):
     saved = inline_report(report, sheet, uuid.uuid4().hex)
     with history_lock(sheet):
         rows = []
-        for row in read_history(sheet):
-            if "Report JSON" not in row or "Row filters" not in row:
-                row = history_row(inline_report(load_history_report(sheet, row), sheet, row["Run ID"]), row["Run ID"])
-            rows.append(_category_summary(row))
+        for row in read_history(sheet, preserve_values=True):
+            if "Report JSON" not in row:
+                # Add inline storage without regenerating any existing result cell.
+                migrated = history_row(inline_report(load_history_report(sheet, row), sheet, row["Run ID"]), row["Run ID"])
+                row = {**migrated, **{key: value for key, value in row.items() if key in FIELDS}}
+            rows.append(row)
         write_history(sheet, [*rows, history_row(saved, saved["history"]["run_id"])])
     return saved
+
+
+def delete_history_run(sheet, run_id):
+    """Remove exactly one run, preserving the header and all other CSV bytes."""
+    sheet = Path(sheet).expanduser().resolve()
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("Choose a saved inspection run to delete")
+    run_id = run_id.strip()
+    if not sheet.exists():
+        return False
+    with history_lock(sheet):
+        rows = read_history(sheet, allow_additive_fields=True, preserve_values=True)
+        matches = sum(row["Run ID"].strip() == run_id for row in rows)
+        if not matches:
+            return False
+        if matches != 1:
+            raise ValueError("Run ID occurs more than once; no entries were deleted")
+        raw = sheet.read_bytes()
+        # Keep original quoting, line endings, whitespace, columns and JSON.
+        # CSV records can span physical lines, so do not delete by line number.
+        text = raw.decode("utf-8-sig")
+        stream = io.StringIO(text, newline="")
+        reader = csv.reader(stream, skipinitialspace=True)
+        column = [name.strip() for name in next(reader)].index("Run ID")
+        start = stream.tell()
+        for values in reader:
+            end = stream.tell()
+            if values and values[column].strip() == run_id:
+                remaining = (text[:start] + text[end:]).encode("utf-8")
+                if raw.startswith(b"\xef\xbb\xbf"):
+                    remaining = b"\xef\xbb\xbf" + remaining
+                break
+            start = end
+        else:
+            raise ValueError("Selected run could not be located; no entries were deleted")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="wb", dir=sheet.parent,
+                                             prefix=f".{sheet.name}-", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                output.write(remaining)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(sheet)
+        finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+    return True
 
 
 def load_history_report(sheet, row):

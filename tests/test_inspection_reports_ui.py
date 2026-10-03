@@ -56,7 +56,8 @@ class InspectionReportUITests(unittest.TestCase):
             format_rows = app.dataframe[0].value
             self.assertEqual(format_rows.iloc[0]["Extension"], ".jsonl")
             self.assertEqual(format_rows.iloc[0]["Parsing requirement"], report["inventory"]["file_formats"]["groups"][0]["parsing_hint"])
-            self.assertFalse(app.selectbox)  # No separate filter settings or category overrides.
+            # Example selection is read-only; it cannot override classifications.
+            self.assertTrue(all(item.label == "Example category" for item in app.selectbox))
             next(item for item in app.button if item.label == "Reload report").click().run()
             self.assertFalse(app.exception)
             self.assertEqual((report_path.stat().st_mtime_ns, output.stat().st_mtime_ns), signatures)

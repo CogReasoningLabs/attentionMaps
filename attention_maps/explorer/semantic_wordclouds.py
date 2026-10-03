@@ -48,7 +48,8 @@ def content_text(instance, schema, fallback):
 
     fields = {"pretraining": ("text",), "task_specific_supervised": ("text",),
               "instruction_finetuning": ("messages",),
-              "preference_tuning": ("prompt", "chosen", "rejected")}[schema]
+              "preference_tuning": ("prompt", "chosen", "rejected"),
+              "evaluation": ("input", "reference")}[schema]
     return "\n".join(content(instance.get(field)) for field in fields)
 
 

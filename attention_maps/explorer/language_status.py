@@ -64,6 +64,13 @@ def coverage_label(languages: Sequence[str]) -> str:
     return "Multilingual" if len(codes) > 1 else "Other"
 
 
+def saved_language_options(status: Mapping[str, Any]) -> tuple[str, ...]:
+    """Percentage remainder buckets never become supported summary/vote labels."""
+    counts = status.get("language_category_counts")
+    return tuple(name for name in LANGUAGE_COVERAGE_OPTIONS
+                 if not isinstance(counts, dict) or name in counts)
+
+
 @dataclass
 class LanguageEvidence:
     """Mergeable counts; sampled records need not be retained in memory."""
@@ -149,7 +156,9 @@ def _record_script_category(scripts: Counter, languages: set[str], thresholds: M
 def record_language_evidence(
     record: Mapping[str, Any], text_columns: Sequence[str] = (),
     *, max_characters: int | None = None, detector=None, hf_selection: Sequence[dict] = (),
-    thresholds: Mapping[str, float] | None = None,
+    thresholds: Mapping[str, float] | None = None, extracted_text: str | None = None,
+    precomputed_prediction: Mapping[str, Any] | None = None,
+    prediction_details: dict | None = None,
 ) -> LanguageEvidence:
     evidence = LanguageEvidence(records=1)
     for name in LANGUAGE_FIELDS:
@@ -159,9 +168,11 @@ def record_language_evidence(
             if language is not None and str(language).strip():
                 evidence.observed.update(language_codes(language))
                 evidence.column_labels.setdefault(name, Counter())[str(language)] += 1
-    text = extract_text(record, text_columns)
+    text = extracted_text if extracted_text is not None else extract_text(record, text_columns)
     if not evidence.observed and not hf_selection and detector is not None:
-        prediction = detector.detect(text)
+        prediction = precomputed_prediction if precomputed_prediction is not None else detector.detect(text)
+        if prediction_details is not None:
+            prediction_details.update(prediction)
         evidence.detection_reasons[prediction['reason']] += 1
         evidence.detection_truncated = int(prediction['truncated'])
         if prediction['language']:
@@ -299,6 +310,12 @@ def status_from_evidence(
     language_category_counts = {name: evidence.language_category_records[name]
                                 for name in LANGUAGE_COVERAGE_OPTIONS}
     script_category_counts = {name: evidence.script_category_records[name] for name in SCRIPT_OPTIONS}
+    # Reporting only: expose the existing remainder counters without changing
+    # evidence, denominators, thresholds, classifications, or votes.
+    language_category_counts.update(Other=evidence.language_outside_categories_records,
+                                    Unknown=evidence.language_no_evidence_records)
+    script_category_counts.update(Other=evidence.script_outside_categories_records,
+                                  Unknown=evidence.script_no_evidence_records)
     return {
         "language_coverage": coverage, "language_basis": basis,
         "languages": languages, "observed_language_counts": dict(evidence.observed),

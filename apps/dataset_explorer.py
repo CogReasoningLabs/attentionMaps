@@ -69,7 +69,7 @@ from attention_maps.explorer import (
     stage_s3_object,
     staged_source_spec,
 )
-from attention_maps.datasets.schemas import STANDARD_TRAINING_SCHEMAS
+from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 from apps.explorer_tabs import (
     render_details_tab,
     render_inference_hub,
@@ -361,7 +361,7 @@ def run_app() -> None:
     hf_configuration = None
     if source_type != "Local":
         schema = st.sidebar.selectbox(
-            "Standard dataset schema", STANDARD_TRAINING_SCHEMAS,
+            "Standard dataset schema", STANDARD_DATASET_SCHEMAS,
             format_func=lambda item: item.label, key=f"source-schema:{source_type}",
         ).key
         if source_type == "Hugging Face":

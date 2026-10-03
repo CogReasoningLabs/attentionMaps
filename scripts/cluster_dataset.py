@@ -53,6 +53,7 @@ def parser(run_defaults=None):
     run.add_argument("--language", dest="languages", action="append")
     run.add_argument("--training-schema", choices=("auto", *SCHEMAS), default="auto", help="Canonical atomic data-instance schema")
     run.add_argument("--field-map", dest="field_mapping", action="append", metavar="CANONICAL=SOURCE.PATH", help="Map schema fields to source columns; repeat as needed")
+    run.add_argument("--field-parser", dest="field_parsers", action="append", metavar="FIELD=string|join_strings", help="Parse mapped text fields; repeat as needed")
     run.add_argument("--task-name", help="Task name for supervised sources without a task column")
     run.add_argument("--text-record-unit", choices=("line", "blank_line"), default="line", help="TXT instance boundary; never inferred from titles or sentences")
     run.add_argument("--model", choices=tuple(MODEL_PRESETS), default="nepali-bert")
@@ -123,6 +124,16 @@ def parse_arguments(arguments=None):
                 raise ValueError(f"Repeated --field-map for {name.strip()}")
             mapping[name.strip()] = source.strip()
         args.field_mapping = mapping
+    if args.command == "run" and isinstance(args.field_parsers, list):
+        parsers = {}
+        for item in args.field_parsers:
+            name, separator, mode = item.partition("=")
+            if not separator or not name.strip() or not mode.strip():
+                raise ValueError("--field-parser requires FIELD=PARSER")
+            if name.strip() in parsers:
+                raise ValueError(f"Repeated --field-parser for {name.strip()}")
+            parsers[name.strip()] = mode.strip()
+        args.field_parsers = parsers
     return args
 
 

@@ -8,9 +8,11 @@ from typing import Any
 
 from apps.components.inspection_history import select_history_report
 from attention_maps.explorer.inspection_history import decision_text
-from attention_maps.explorer.language_status import LANGUAGE_COVERAGE_OPTIONS, SCRIPT_OPTIONS
+from attention_maps.explorer.language_status import SCRIPT_OPTIONS, saved_language_options
+from attention_maps.explorer.category_proportions import category_breakdown
 from apps.components.file_formats import render_file_formats
 from apps.components.sampling_vote import render_sampling_vote
+from apps.components.inspection_examples import render_record_examples
 from attention_maps.explorer.inspection import file_signatures
 from attention_maps.explorer.inspection_runs import load_inspection_report
 from attention_maps.explorer.text import format_decimal_bytes
@@ -19,12 +21,12 @@ REPORT_STATE_KEY = "dataset-inspection-report"
 
 
 def _category_value(status: dict, key: str) -> str:
-    allowed = LANGUAGE_COVERAGE_OPTIONS if key == "language_coverage" else SCRIPT_OPTIONS
+    allowed = saved_language_options(status) if key == "language_coverage" else SCRIPT_OPTIONS
     return status[key] if status[key] in allowed else "—"
 
 
-def _display_vote_counts(counts: dict, key: str) -> dict:
-    allowed = LANGUAGE_COVERAGE_OPTIONS if key == "language_coverage" else SCRIPT_OPTIONS
+def _display_vote_counts(counts: dict, key: str, status: dict) -> dict:
+    allowed = saved_language_options(status) if key == "language_coverage" else SCRIPT_OPTIONS
     shown = {label: count for label, count in counts.items() if label in allowed}
     abstentions = sum(count for label, count in counts.items() if label not in allowed)
     if abstentions:
@@ -37,7 +39,7 @@ def _render_category_proportions(st: Any, status: dict, key: str) -> None:
         return f"{count / total:.2%}" if total else "0.00%"
 
     if key == "language_coverage":
-        options = LANGUAGE_COVERAGE_OPTIONS
+        prefix = "language"
         counts = status.get("language_category_counts")
         percentages = status.get("language_category_percentages")
         denominator = status["sampled_records"]
@@ -46,10 +48,12 @@ def _render_category_proportions(st: Any, status: dict, key: str) -> None:
         detail = (f"No language evidence: {no_evidence:,} ({share(no_evidence, denominator)}); "
                   f"outside listed categories: {outside:,} ({share(outside, denominator)}). "
                   "Both remain in the denominator.")
+        if "Other" in (counts or {}):
+            detail += " Other groups accepted language evidence outside the Nepali/English categories; no-evidence records stay separate."
         scope = "all unique sampled records"
         detail += " Multilingual here means a single record with multiple language labels."
     else:
-        options = SCRIPT_OPTIONS
+        prefix = "script"
         counts = status.get("script_category_counts")
         percentages = status.get("script_category_percentages")
         denominator = status.get("script_eligible_records", 0)
@@ -64,14 +68,23 @@ def _render_category_proportions(st: Any, status: dict, key: str) -> None:
         st.caption("Category proportions were not saved by this earlier run. Rerun the inspection script to calculate them.")
         return
     st.caption(f"Category proportions · denominator: {denominator:,} {scope}")
-    st.dataframe([{"Category": name, "Records": counts[name], "Percent": percentages[name]}
-                  for name in options], hide_index=True, width="stretch")
+    counts, percentages = category_breakdown(status, prefix)
+    rows = [{"Category": name, "Records": count, "Percent": percentages[name]}
+            for name, count in counts.items()]
+    rows.append({"Category": "Total", "Records": sum(counts.values()),
+                 "Percent": 100.0 if denominator else None})
+    st.dataframe(rows, hide_index=True, width="stretch")
+    if not denominator:
+        st.caption("No eligible records; percentages are undefined.")
+    elif round(sum(percentages.values()), 2) != 100.0:
+        st.caption(f"Displayed shares sum to {sum(percentages.values()):.2f}% because each is rounded to two decimals. "
+                   "All records are accounted for; the exact total is 100%. Existing percentages are not adjusted.")
     st.caption(detail)
     if key == "language_coverage" and (status.get("language_detection") or {}).get("attempted_records"):
         st.caption("The text detector assigns one dominant language per record; bilingual and multilingual record shares require multi-language column labels or a multi-label detector.")
 
 
-def render_saved_status(st: Any, status: dict) -> None:
+def render_saved_status(st: Any, status: dict, *, example_key: str = "inspection-selected") -> None:
     cards = st.columns(2)
     for card, key, label in zip(cards, ("language_coverage", "script"), ("Language coverage", "Script")):
         with card.container(border=True):
@@ -105,7 +118,7 @@ def render_saved_status(st: Any, status: dict) -> None:
                 st.caption(status["script_reason"])
             vote = status.get("voting", {}).get(key)
             if vote:
-                st.write({"Category votes": _display_vote_counts(vote["counts"], key)})
+                st.write({"Category votes": _display_vote_counts(vote["counts"], key, status)})
                 rows = []
                 for run in status["sampling"]["run_results"]:
                     row = {"Run": run["run"], "Records": run["sampled_records"],
@@ -177,6 +190,7 @@ def render_saved_status(st: Any, status: dict) -> None:
     if status.get("script_percentages"):
         st.caption("All sampled text: raw Unicode script percentages (diagnostics, independent of Nepali coverage).")
         st.json(status["script_percentages"], expanded=False)
+    render_record_examples(st, status, key=example_key)
 
 
 def render_inspection_report(st: Any, report: dict) -> None:
@@ -184,7 +198,9 @@ def render_inspection_report(st: Any, report: dict) -> None:
     inventory = report["inventory"]
     settings = report["settings"]
     st.subheader("Dataset inspection script results")
-    st.caption(f"Run completed: {report.get('created_at', 'Unknown')} · report version {report['report_version']}")
+    duration = report.get("processing_seconds")
+    duration_text = f" · processing time: {duration:,.3f} s" if isinstance(duration, (int, float)) else ""
+    st.caption(f"Run completed: {report.get('created_at', 'Unknown')}{duration_text} · report version {report['report_version']}")
     provider = inventory.get("provider") or ("huggingface" if inventory.get("format") == "huggingface" else "local")
     st.caption(f"Source provider: {provider}")
     st.code(inventory.get("source_uri") or inventory.get("dataset_id") or settings.get("local") or "Local dataset", language=None)
@@ -216,7 +232,22 @@ def render_inspection_report(st: Any, report: dict) -> None:
                "then sample or apply optional Devanagari filtering within that portion. "
                "Language/script thresholds classify those samples; excluded corpus records do not contribute.")
     st.markdown("#### Selected portion language coverage and script")
+    definition = report.get("instance_definition")
+    if definition:
+        st.caption(f"Instance category: {definition['label']} · Unit: {definition['unit']} · "
+                   f"Source boundary: {definition['text_record_unit']}")
+        if definition.get("field_parsers"):
+            st.caption(f"Field parsers: {definition['field_parsers']}")
     st.caption(f"Sample scope: {report.get('sample_scope', 'selected_source_sample')}")
+    instance_selection = report.get("instance_selection")
+    if instance_selection:
+        st.caption(f"Valid instances sampled from: {instance_selection['eligible_rows']:,} / "
+                   f"{instance_selection['source_rows']:,} selected source rows · "
+                   f"{instance_selection['skipped_rows']:,} incomplete instances excluded")
+        if instance_selection["skipped_rows"]:
+            with st.expander("Excluded instance reasons and source rows"):
+                st.json(instance_selection["reason_counts"])
+                st.dataframe(instance_selection["examples"], hide_index=True, width="stretch")
     render_saved_status(st, report["language_status"])
     filtered = report.get("filter_result")
     if filtered is not None:
@@ -232,7 +263,7 @@ def render_inspection_report(st: Any, report: dict) -> None:
         st.caption(f"Output file format: {filtered.get('output_format', 'Unknown').upper()}")
         st.caption(f"Filtered output: {format_decimal_bytes(filtered['output_bytes'])} · {filtered['scope']}")
         st.markdown("#### Filtered output language coverage and script")
-        render_saved_status(st, filtered["language_status"])
+        render_saved_status(st, filtered["language_status"], example_key="inspection-filtered")
     with st.expander("Exact script settings and selected files"):
         st.json(settings)
         st.write(inventory.get("dataset_shards") or inventory.get("selected_files") or inventory.get("source_files") or [])

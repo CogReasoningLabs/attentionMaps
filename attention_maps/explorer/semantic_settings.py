@@ -5,12 +5,13 @@ from pathlib import Path
 from .semantic_models import MODEL_PRESETS
 from .semantic_instances import SCHEMAS, FIELD_NAMES
 from .semantic_source import SOURCE_KEYS
+from .field_parsers import validate_field_parsers
 
 RUN_KEYS = set(SOURCE_KEYS) | {
     "source_settings", "model", "model_id", "model_revision", "embedding_task",
     "device", "batch_size", "max_length", "max_records", "clusters",
     "cluster_batch_size", "cluster_epochs", "seed", "output_dir",
-    "training_schema", "field_mapping", "task_name", "text_record_unit", "wordcloud_font",
+    "training_schema", "field_mapping", "field_parsers", "task_name", "text_record_unit", "wordcloud_font",
 }
 
 
@@ -58,6 +59,7 @@ def load_embedding_settings(path):
         key not in FIELD_NAMES or not isinstance(value, str) or not value.strip() for key, value in mapping.items()
     )):
         raise ValueError("field_mapping must map canonical field names to source column paths")
+    validate_field_parsers(settings.get("field_parsers"))
     model_id = settings.get("model_id")
     if model_id and model_id.startswith(("./", "../", "/", "~/")):
         settings["model_id"] = str((path.parent / Path(model_id).expanduser()).resolve())
@@ -94,7 +96,7 @@ def apply_cli_overrides(defaults, raw):
     if supplied("--source-settings"):
         for key in SOURCE_KEYS:
             defaults[key] = None
-    for flag, key in (("--field-map", "field_mapping"), ("--shard", "shards"), ("--text-column", "text_columns"), ("--language", "languages")):
+    for flag, key in (("--field-map", "field_mapping"), ("--field-parser", "field_parsers"), ("--shard", "shards"), ("--text-column", "text_columns"), ("--language", "languages")):
         if supplied(flag):
             defaults[key] = None
     return defaults

@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from attention_maps.explorer.semantic_instances import make_instance, resolve_instance_definition, iter_instance_records
+from attention_maps.explorer.semantic_instances import make_instance, resolve_instance_definition, iter_instance_records, inspection_instance_text
 from attention_maps.explorer.semantic_artifacts import pair_similarity, load_run, get_record
 from scripts.cluster_dataset import main, parse_arguments
 from tests.test_semantic_analysis import FixtureEncoder, make_run
@@ -38,6 +38,42 @@ class SemanticInstanceTests(unittest.TestCase):
         self.assertEqual(record, original)
         self.assertNotIn("publisher", embedded)
 
+    def test_pretraining_auto_text_ignores_paragraph_list_and_metadata(self):
+        from attention_maps.explorer.text import text_columns
+        record = {"source_pdf": "issue.pdf", "text": "नेपाल राम्रो छ", "paragraphs": ["नेपाल राम्रो छ"]}
+        inventory = {"columns": list(record), "format": "huggingface", "schema": [
+            {"column": "source_pdf", "type": "Value('string')"},
+            {"column": "text", "type": "Value('string')"},
+            {"column": "paragraphs", "type": "List(Value('string'))"},
+        ]}
+        inferred = text_columns(inventory["schema"])
+        self.assertIn("paragraphs", inferred)  # Generic explorer permits structured fields.
+        contract = resolve_instance_definition(inventory, inferred,
+            SimpleNamespace(training_schema="pretraining", text_columns=None))
+        self.assertEqual(contract["text_columns"], ["text"])
+        self.assertEqual(inspection_instance_text(record, contract), record["text"])
+        explicit = resolve_instance_definition(inventory, ["paragraphs"],
+            SimpleNamespace(training_schema="pretraining", text_columns=["paragraphs"]))
+        with self.assertRaisesRegex(ValueError, "paragraphs.*list"):
+            inspection_instance_text(record, explicit)
+
+    def test_mapped_paragraphs_are_one_document_with_explicit_parser(self):
+        record = {"paragraphs": ["नेपाल राम्रो छ", "अर्को अनुच्छेद"], "source_pdf": "issue.pdf"}
+        contract = definition(record, schema="pretraining", fields=["paragraphs"],
+                              field_mapping={"text": "paragraphs"},
+                              field_parsers={"text": "join_strings"})
+        instance, embedded, _ = adapt(record, contract)
+        self.assertEqual(instance["text"], "नेपाल राम्रो छ\n\nअर्को अनुच्छेद")
+        self.assertEqual(embedded, instance["text"])
+        self.assertEqual(record["paragraphs"], ["नेपाल राम्रो छ", "अर्को अनुच्छेद"])
+        self.assertEqual(inspection_instance_text(record, contract), instance["text"])
+        self.assertEqual(adapt({"paragraphs": "नेपाल राम्रो छ"}, contract)[0]["text"], "नेपाल राम्रो छ")
+        with self.assertRaisesRegex(ValueError, "list item 1"):
+            adapt({"paragraphs": ["नेपाल", 3]}, contract)
+        with self.assertRaisesRegex(ValueError, "field_parsers"):
+            definition(record, schema="pretraining", fields=["paragraphs"],
+                       field_mapping={"text": "paragraphs"}, field_parsers={"text": "str"})
+
     def test_missing_ids_are_stable_and_unknown_split_is_not_invented(self):
         record = {"text": "नेपाल"}
         first = adapt(record, definition(record))
@@ -45,6 +81,24 @@ class SemanticInstanceTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first[2])
         self.assertIsNone(first[0]["split"])
+
+    def test_language_named_source_split_is_provenance_not_training_split(self):
+        record = {"doc_id": "a", "text": "नेपाल राम्रो छ"}
+        contract = definition(record, schema="pretraining", field_mapping={"id": "doc_id"})
+        instance, text, _ = make_instance(
+            record, contract, source_row=0, source_identity="owner/corpus", source_split="nep")
+        self.assertEqual(instance["id"], "a")
+        self.assertIsNone(instance["split"])
+        self.assertEqual(instance["source_split"], "nep")
+        self.assertEqual(text, record["text"])
+        self.assertEqual(inspection_instance_text(record, contract, source_split="nep"), record["text"])
+        training, _, _ = make_instance(
+            record, contract, source_row=0, source_identity="owner/corpus", source_split="train")
+        self.assertEqual(training["split"], "train")
+        self.assertEqual(training["source_split"], "train")
+        with self.assertRaisesRegex(ValueError, "Instance split must"):
+            make_instance({**record, "split": "nep"}, contract, source_row=0,
+                          source_identity="owner/corpus", source_split="train")
 
     def test_conversation_keeps_all_turns_roles_and_final_response(self):
         record = {"id": "sft", "messages": [{"role": "system", "content": "नेपालीमा लेख्नुहोस्"},
@@ -63,10 +117,15 @@ class SemanticInstanceTests(unittest.TestCase):
 
     def test_instruction_input_output_becomes_one_complete_conversation(self):
         record = {"instruction": "Translate", "input": "Hello", "output": "नमस्ते", "system": "Be accurate"}
-        instance, text, _ = adapt(record, definition(record))
+        contract = definition(record)
+        instance, text, _ = adapt(record, contract)
         self.assertEqual(len(instance["messages"]), 3)
         for part in ("Translate", "Hello", "नमस्ते", "Be accurate"):
             self.assertIn(part, text)
+        self.assertIn("[input]", text)
+        analyzed = inspection_instance_text(record, contract)
+        self.assertEqual(analyzed, "Be accurate\n\nTranslate\n\nHello\n\nनमस्ते")
+        self.assertNotIn("[input]", analyzed)
 
     def test_supervised_includes_label_zero_task_and_all_input_fields(self):
         record = {"sentence1": "First sentence", "sentence2": "Second sentence", "label": 0}
@@ -78,6 +137,26 @@ class SemanticInstanceTests(unittest.TestCase):
         self.assertTrue(text.endswith("[label]\n0"))
         with self.assertRaisesRegex(ValueError, "label and task"):
             adapt(record, definition(record, fields=["sentence1"]))
+
+    def test_evaluation_pair_preserves_input_reference_and_test_split(self):
+        record = {"corrupted": "नेपाल सन्दर छ", "clean": "नेपाल सुन्दर छ"}
+        contract = definition(record, schema="evaluation",
+                              field_mapping={"input": "corrupted", "reference": "clean"},
+                              task_name="ocr_proofreading")
+        instance, embedding_text, generated = make_instance(
+            record, contract, source_row=3, source_identity="owner/proofreader", source_split="test")
+        self.assertTrue(generated)
+        self.assertEqual(instance["split"], "test")
+        self.assertEqual(instance["input"], record["corrupted"])
+        self.assertEqual(instance["reference"], record["clean"])
+        self.assertEqual(instance["task"], "ocr_proofreading")
+        self.assertEqual(inspection_instance_text(record, contract, source_split="test"),
+                         "नेपाल सन्दर छ\n\nनेपाल सुन्दर छ")
+        self.assertIn("[input]\nनेपाल सन्दर छ", embedding_text)
+        self.assertIn("[reference]\nनेपाल सुन्दर छ", embedding_text)
+        self.assertNotIn("ocr_proofreading", embedding_text)
+        with self.assertRaisesRegex(ValueError, "non-empty string reference"):
+            adapt({"corrupted": "नेपाल", "clean": None}, contract)
 
     def test_preference_group_embeds_both_branches_and_swapping_changes_representation(self):
         record = {"prompt": "Question", "chosen": "Good answer", "rejected": "Bad answer"}
@@ -99,9 +178,10 @@ class SemanticInstanceTests(unittest.TestCase):
         self.assertEqual(instance["label"], "news")
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "embedding.yaml"
-            config.write_text("local: source.jsonl\noutput_dir: result\nfield_mapping: {text: old}\n")
-            args = parse_arguments(["run", "--settings", str(config), "--field-map", "text=payload.body", "--field-map", "label=payload.category"])
+            config.write_text("local: source.jsonl\noutput_dir: result\nfield_mapping: {text: old}\nfield_parsers: {text: string}\n")
+            args = parse_arguments(["run", "--settings", str(config), "--field-map", "text=payload.body", "--field-map", "label=payload.category", "--field-parser", "text=join_strings"])
             self.assertEqual(args.field_mapping, {"text": "payload.body", "label": "payload.category"})
+            self.assertEqual(args.field_parsers, {"text": "join_strings"})
 
     def test_explicit_blank_line_boundaries_keep_whole_documents(self):
         with tempfile.TemporaryDirectory() as directory:

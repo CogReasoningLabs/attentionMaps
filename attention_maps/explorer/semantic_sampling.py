@@ -145,7 +145,8 @@ def curate_run(args):
                             schema = report["instance_definition"]["schema"]
                             fields = {"pretraining": ["text"], "task_specific_supervised": ["text"],
                                       "instruction_finetuning": ["messages"],
-                                      "preference_tuning": ["prompt", "chosen", "rejected"]}[schema]
+                                      "preference_tuning": ["prompt", "chosen", "rejected"],
+                                      "evaluation": ["input", "reference"]}[schema]
                         item = record_language_evidence(record, fields)
                         evidence.add(item)
                         if not union[index]:

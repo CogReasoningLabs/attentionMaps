@@ -1,5 +1,6 @@
 from attention_maps.explorer.inspection_runs import load_inspection_report
 import contextlib
+import gzip
 import io
 import json
 import tempfile
@@ -14,6 +15,7 @@ from attention_maps.explorer.huggingface import (
     inspect_huggingface_selection, selected_source_spec,
 )
 from attention_maps.explorer.inspection import sample_huggingface_rows
+from attention_maps.explorer.inspection_runs import iter_inspection_records
 from attention_maps.explorer.language_status import analyze_language_status, inventory_language_status
 from tests.inspection_helpers import isolated_main as main
 
@@ -82,11 +84,83 @@ class HuggingFaceSelectionTests(unittest.TestCase):
         self.assertEqual(names.call_args.kwargs["revision"], "frozen-commit")
         self.assertEqual(loader.call_args.kwargs["revision"], "frozen-commit")
         self.assertEqual(configuration["splits"]["test"]["file_formats"]["extensions"], [".parquet"])
-        inventory = inspect_huggingface_selection(configuration, "test")
+        with patch("attention_maps.explorer.huggingface._parquet_metadata", return_value={
+            "rows": 5, "memory_bytes": 150,
+            "schema": [{"column": "text", "type": "string", "nullable": "True"}],
+        }):
+            inventory = inspect_huggingface_selection(configuration, "test")
         self.assertEqual(inventory["rows"], 5)
         self.assertEqual(inventory["hub_file_bytes"], 50)
         self.assertEqual(inventory["memory_bytes"], 150)
         self.assertEqual(inventory["dataset_shards"], builder.config.data_files["test"])
+
+    def test_legacy_builder_uses_pinned_config_json_without_running_repository_code(self):
+        info = SimpleNamespace(
+            sha="pinned", card_data=SimpleNamespace(to_dict=lambda: {"language": ["ne", "en"]}),
+            siblings=[SimpleNamespace(rfilename="data/ne.json.gz", size=100),
+                      SimpleNamespace(rfilename="data/en.json.gz", size=200),
+                      SimpleNamespace(rfilename="Bactrian-X.py", size=300)],
+        )
+        with patch("huggingface_hub.HfApi.dataset_info", return_value=info), \
+             patch("datasets.get_dataset_config_names", side_effect=RuntimeError(
+                 "Dataset scripts are no longer supported, but found Bactrian-X.py")):
+            catalog = discover_huggingface_dataset("MBZUAI/Bactrian-X")
+        self.assertEqual(catalog["configs"], ["en", "ne"])
+        configuration = inspect_huggingface_configuration(catalog, "ne")
+        self.assertEqual(configuration["dataset_loader"], "json")
+        self.assertEqual(list(configuration["splits"]), ["train"])
+        self.assertEqual(configuration["splits"]["train"]["shards"][0]["path"],
+                         "hf://datasets/MBZUAI/Bactrian-X@pinned/data/ne.json.gz")
+
+    def test_pinned_raw_json_array_is_read_as_complete_source_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ne.json.gz"
+            with gzip.open(path, "wt", encoding="utf-8") as stream:
+                json.dump([{"id": "one", "instruction": "नेपाल", "input": "", "output": "उत्तर"},
+                           {"id": "two", "instruction": "कहाँ?", "input": "यहाँ", "output": "त्यहाँ"}],
+                          stream, ensure_ascii=False)
+            shard = {"path": str(path), "name": "data/ne.json.gz", "bytes": path.stat().st_size}
+            configuration = {"dataset_id": "owner/legacy", "revision": "pinned", "config": "ne",
+                             "languages": ["ne"], "dataset_loader": "json", "schema": [],
+                             "splits": {"train": {"rows": 2, "memory_bytes": None, "shards": [shard]}}}
+            inventory = inspect_huggingface_selection(configuration, "train")
+            self.assertEqual(inventory["dataset_loader"], "json")
+            self.assertEqual(inventory["columns"], ["id", "instruction", "input", "output"])
+            rows = list(iter_inspection_records(inventory, batch_size=1))
+            self.assertEqual([row["id"] for row in rows], ["one", "two"])
+            self.assertEqual(rows[0]["output"], "उत्तर")
+
+    def test_zero_builder_count_is_unknown_until_files_are_inspected(self):
+        catalog = {"dataset_id": "owner/data", "revision": "frozen", "configs": ["default"],
+                   "file_sizes": {}, "languages": []}
+        builder = SimpleNamespace(
+            config=SimpleNamespace(data_files={"train": ["first.parquet"]}),
+            info=SimpleNamespace(features={"text": "string"}, splits={
+                "train": SimpleNamespace(num_examples=0, num_bytes=0),
+            }),
+        )
+        with patch("datasets.load_dataset_builder", return_value=builder):
+            configuration = inspect_huggingface_configuration(catalog, "default")
+        self.assertIsNone(configuration["splits"]["train"]["rows"])
+        self.assertIsNone(inspect_huggingface_selection(
+            configuration, "train", metadata_only=True)["rows"])
+
+    def test_parquet_footer_overrides_inaccurate_builder_split_count(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        with tempfile.TemporaryDirectory() as directory:
+            first, second = Path(directory) / "first.parquet", Path(directory) / "second.parquet"
+            pq.write_table(pa.table({"text": ["one", "two"]}), first)
+            pq.write_table(pa.table({"text": ["three"]}), second)
+            configuration = self.configuration(first, second)
+            for reported_rows in (0, 1, 2):
+                configuration["splits"]["train"]["rows"] = reported_rows
+                inventory = inspect_huggingface_selection(configuration, "train")
+                self.assertEqual(inventory["rows"], 3)
+                self.assertEqual(inventory["size_metadata_source"], "Parquet footers (selected shards)")
+            metadata_only = inspect_huggingface_selection(configuration, "train", metadata_only=True)
+            self.assertEqual(metadata_only["rows"], 2)
 
     def test_second_shard_has_its_own_counts_and_is_the_only_sampled_file(self):
         import pyarrow as pa
