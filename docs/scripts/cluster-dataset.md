@@ -272,6 +272,7 @@ to define the atomic unit. Set `training_schema` in the central YAML:
 | `instruction_finetuning` | One complete conversation | Every message, in order, with system/user/assistant role markers. |
 | `task_specific_supervised` | One labelled example | Task, full input text, and label, with field markers. |
 | `preference_tuning` | One prompt/preference group | Prompt, chosen and rejected together, with branch markers. |
+| `evaluation` | One input/reference example | Input and reference together, with field markers. |
 
 `auto` infers these from canonical columns, conversations, or
 instruction/input/output fields. Explicit selection is preferred for research
@@ -304,7 +305,14 @@ an example-level similarity score, not a label-blind input-only score.
 
 For SFT, use canonical `messages`, `conversations` (human/gpt aliases are mapped),
 or instruction/input/output fields. Nested conversations can be selected with
-`field_mapping: {messages: payload.turns}`. Complete user/assistant turns and an
+`field_mapping: {messages: payload.turns}`. For a document stored as an ordered
+list of paragraph strings, use `field_mapping: {text: paragraphs}` with
+`field_parsers: {text: join_strings}` in `configs/embeddings.yaml`. The parser
+joins paragraphs with blank lines and rejects non-string list items; the
+raw source record remains available for inspection. A scalar text column uses
+the default `string` behavior. Both `--field-map text=paragraphs` and
+`--field-parser text=join_strings` can override the YAML for one run.
+Complete user/assistant turns and an
 ending assistant response are required. `text_columns` does not discard turns
 or preference branches for structured schemas. Preference chosen and rejected
 must be non-empty and different.

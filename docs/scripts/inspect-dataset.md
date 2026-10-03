@@ -35,6 +35,11 @@ remain in the same file. Repeating a dataset preserves its previous seed,
 settings, votes, and decision. A run means one script invocation, which can
 contain multiple independent sampling votes.
 
+The CSV records `Started at`, `Completed at`, and `Processing seconds` for each
+successful inspection. Processing time spans command setup, source discovery/loading,
+sampling, classification, and report construction; it excludes writing the CSV and
+printing the report. Historical rows have blank timing cells.
+
 The CSV records provider, dataset, configuration, split, version/revision,
 selected files, formats, size, sampling scope, Language Coverage, Script, pooled
 Devanagari percentage, vote totals, every sampling run's evidence, and the final
@@ -68,6 +73,9 @@ must satisfy `vote_min_agreement` and receive more than half of all votes
 (default: at least 3 of 5); ties and abstention majorities leave the summary category blank, but the proportions and evidence are still saved. Hugging Face partition labels are shared evidence, so
 unanimous votes do not independently verify that label. The view
 loads saved reports without accessing datasets or repeating analysis.
+To clean up `artifacts/dataset_inspection/history.csv`, select an **Inspection run**
+and click **Delete selected run**. This immediately removes only that run's CSV
+entry, keeping all other entries exactly as saved. Source dataset files are kept.
 `Report file` can open the latest entry in a saved CSV. You can
 launch directly into history with:
 
@@ -101,8 +109,93 @@ file for all providers:
 | Kaggle | `provider: kaggle`, `dataset: owner/dataset`, `dataset_file`; set `revision`, `config`, `split`, `shards`, and `local` to null. |
 | Local | Set `local` to a file/Parquet directory; set `dataset`, `dataset_file`, `revision`, `config`, `split`, and `shards` to null. |
 
-Set `text_columns` appropriately for the selected source; null enables automatic
-text-field detection. Manual `languages` declarations are no longer used as evidence.
+`MBZUAI/Bactrian-X` uses a legacy Hugging Face builder script that current
+`datasets` versions reject. The inspector reads the selected pinned
+`data/<config>.json.gz` file directly as a JSON array; use `config: ne`,
+`split: train`, and `training_schema: instruction_finetuning`. Its source
+script notes that some outputs are empty, so `invalid_instance_policy: skip`
+records and excludes incomplete instruction/answer pairs.
+
+Before analyzing a new dataset, set `training_schema` in the same YAML to one of
+`pretraining`, `instruction_finetuning`, `task_specific_supervised`,
+`preference_tuning`, or `evaluation`. The first four are training instance
+contracts; `evaluation` is a separate reference-based test example contract.
+A batch contains complete instances: one document, one conversation, one
+labelled example, one preference group, or one evaluation input/reference pair.
+`field_mapping` maps canonical fields to source paths (for example,
+`{text: payload.body, label: payload.category}`); set `task_name` when a
+supervised source lacks a task column. Mapped document text normally uses the
+`string` parser: the source value must be a string. To use a list of paragraph
+strings as one document, configure:
+
+```yaml
+field_mapping: {text: paragraphs}
+field_parsers: {text: join_strings}
+```
+
+`join_strings` accepts a string or an ordered list of strings and joins list
+items with blank lines. It rejects numbers, objects, and mixed lists rather
+than silently converting them. `field_parsers` is saved with the instance
+definition and also works with `--field-parser text=join_strings`. The same
+parser names are available in embedding settings. For TXT, `text_record_unit: line` treats
+each non-empty line as a document. Use `blank_line` only when empty lines really
+separate complete documents. For JSONL, CSV, Parquet, and Hugging Face, each
+source row is an instance. A wrong category or missing mapped field fails the
+run when that instance is analyzed; no completed report is appended.
+
+`batch_size` controls source reading where the loader supports batches and the
+number of selected complete instances sent to each analysis worker. For
+Hugging Face and local/staged Kaggle Parquet, the same value controls source
+batches; text/CSV/JSONL readers stream rows. `concurrency` sets the worker
+count. The schema changes the content examined for language/script: the whole
+document, all conversation messages, the supervised input text, all three
+preference branches, or both evaluation input and reference. Labels, task names, and role markers are excluded from
+language/script proportions. The report saves the chosen instance definition,
+and Streamlit shows its category and boundary. If clustering the same dataset,
+set the matching `training_schema` in `configs/embeddings.yaml` as well.
+
+Set `text_columns` appropriately for document or supervised source text; null
+enables automatic text-field detection. Conversation and preference instances
+use all schema fields, regardless of `text_columns`. Manual `languages`
+declarations are no longer used as evidence.
+Instruction and conversation records must contain complete user/assistant
+turns. By default, any incomplete selected instance stops the run with its
+source-row index. For a source with a few known incomplete pairs, set
+`invalid_instance_policy: skip` (or pass `--invalid-instance-policy skip`).
+The inspector then validates the entire selected portion once, records counts
+and example source rows for excluded instances, and draws exact random samples
+only from the remaining valid instances. This costs an extra source pass.
+The report and history sheet show valid/skipped counts; Streamlit also shows
+the reasons. The policy currently applies to percentage sampling without
+Devanagari export filtering. It does not synthesize missing answers.
+
+For a reference-based evaluation source, select the held-out split and map
+`input` and `reference` to its source columns. For the proofreader dataset:
+
+```yaml
+provider: huggingface
+dataset: himalaya-ai/nepali-proofreader
+config: default
+split: test
+training_schema: evaluation
+field_mapping: {input: corrupted, reference: clean}
+task_name: ocr_proofreading
+```
+
+Run:
+
+```bash
+venv/bin/python scripts/inspect_dataset.py --settings configs/datasets/dataset.yaml
+```
+
+This classifies the text in both fields and records the source split; it does
+**not** score OCR correction accuracy. The
+dataset also has a `train` split for fine-tuning, so the evaluation role comes
+from the selected `test` split and intended use, not the repository name.
+Other text benchmarks can reuse this contract by changing the two mapped
+paths; datasets without a text reference or with non-text inputs need an
+additional adapter.
+
 Edit this file in place; history keeps earlier runs without separate YAMLs.
 
 Settings files accept YAML or JSON. Paths inside them are relative to the
@@ -382,10 +475,20 @@ percentage mode has no character cap. Overlapping records are analyzed once and
 their evidence is added to each run that selected them. The sampler retains
 aggregate counters, not 20% of the raw dataset in memory. With
 `concurrency: 6`, selected records are classified in six worker processes in
-batches of `batch_size: 1024`; at most 12 batches are queued at once. The parent
-still makes all random selections in source order, so changing concurrency or
-batch size does not change sampled rows, votes, or percentages. Each worker
-loads its own fastText model if text detection is needed, increasing RAM use.
+batches of `batch_size: 1024`; at most 12 batches are queued at once. For a
+batch with no language-column or Hugging Face partition labels, fastText predicts
+the eligible record texts together in one model call, while retaining one result
+per record. Batches containing metadata labels use the per-record fallback.
+The same `batch_size` applies to Hugging Face's native streaming row batches
+and PyArrow row batches for local or Kaggle-staged Parquet files. Kaggle first
+stages the selected file; CSV, JSONL, TXT, and XLSX readers still yield records
+sequentially before selected records are grouped for worker analysis.
+The parent still reads the source and makes all random selections in source
+order, so changing concurrency or batch size does not change sampled rows,
+votes, or percentages. Local TXT/CSV/JSONL metadata counting is also serial.
+These serial stages and process-transfer overhead can limit speedup from more
+workers. Each worker loads its own fastText model if text detection is needed,
+increasing RAM use.
 `concurrency: 1` runs in the original single-process mode. These five
 overlapping random runs are not disjoint K-fold cross-validation. Existing
 local JSON array parsing still loads the document into memory.
@@ -398,15 +501,34 @@ run's evidence, vote counts, agreement, and category proportions across unique
 selected positions. Pooled evidence stays
 visible because a majority result can hide a minority language or script.
 
+Historical research results retain their saved categories, percentages, counts,
+thresholds, and votes. The viewer does not backfill the new `Other` category into
+earlier runs: their outside-category evidence stays under its original label.
+Appending a run preserves existing CSV cell values and embedded reports; newly
+introduced CSV columns remain blank for earlier rows. To apply current analysis
+rules to an earlier dataset, run a new inspection, which receives a separate run ID.
+Adding the remainder categories changes reporting only: with the same source,
+settings, seed, and detector, existing percentages, counters, decisions, and votes
+stay the same. `Other` and `Unknown` are percentage buckets, not new summary or
+voting labels. The existing outside-category and no-evidence counters are retained
+as diagnostics; they describe the same records as these two buckets and must not
+be added a second time.
+
 The CSV includes **Language category %** (each category's share of all unique
 sampled records) and **Nepali script category %** (each category's share of
 Nepali-eligible unique sampled records). Missing language evidence and unsupported
 single-language labels remain in the language denominator and are reported as
-separate counts. Missing or unsupported script evidence remains in the
+`Other` (outside the supported categories) and `Unknown` (no accepted evidence).
+Missing or unsupported script evidence receives the same two percentage buckets in the
 Nepali-eligible denominator. Records without Nepali evidence are outside the
 conditional script denominator. These are record percentages; the existing
 Devanagari % diagnostic is a character percentage. Overlap between runs is counted
-once in the pooled proportions. A **Multilingual** record proportion counts
+once in the pooled proportions. Counts sum exactly to each denominator, so the
+unrounded shares sum to 100%. The display includes a Total row and explains any
+two-decimal rounding difference without changing the existing percentages. An
+empty denominator has no defined percentage total. Older reports expose their
+saved gap counters under the original labels without rewriting the report.
+A **Multilingual** record proportion counts
 records carrying multiple languages; a multilingual dataset can consist entirely
 of single-language records. The current fastText fallback predicts one
 dominant language per record, so bilingual/multilingual record shares are only
@@ -420,6 +542,45 @@ evidence gap.
 Coverage counts distinct source record positions, not summed sample sizes or
 distinct text values. Expected unique coverage is `1 - (1 - k/N)^n`, where `k`
 is the rounded sample size, `N` is the population, and `n` is the run count.
+
+### Inspecting actual classified examples in Streamlit
+
+New percentage-sampling runs save up to 10 random examples per language and
+script category in `language_status.record_examples`. Streamlit's **Inspect
+actual data examples** section lets you choose Language or Script, a category,
+and 5 or 10 examples. Categories with fewer records show all available examples.
+The definitions expander explains each category using that run's saved thresholds.
+
+Examples come from the exact unique records analyzed, using their already
+computed evidence. Selection uses a separate deterministic hash priority based
+on the inspection seed and population position. It consumes no sampling random
+numbers, makes no additional detector calls, and produces the same examples
+regardless of worker count or batch order. Viewing examples never reads the
+source again or changes the saved report, percentages, or votes.
+
+Each example shows the analyzed text, language and script categories, evidence
+origin, accepted language codes, detector rejection reason/score when available,
+and raw script character counts and ratios. Population positions are one-based
+within the selected sampling population after row filters and invalid-instance
+selection; they are not necessarily spreadsheet row numbers. Text previews are
+limited to 8,000 characters and marked when truncated; script counts still cover
+the full analyzed text. Language detector truncation is identified separately.
+
+`Unknown` language examples lack accepted language evidence, such as inputs
+below the minimum letter count or confidence cutoff. Their raw script counts
+can still be 100% Devanagari. Without Nepali evidence, their conditional Script
+category is `Not applicable`, and they remain outside the Nepali-script
+percentage denominator. The UI displays this as **Excluded: no accepted Nepali
+evidence**, and shows **Observed writing system: Devanagari (100.00%)** separately
+when that is what the saved character counts show. Exclusion from the
+Nepali-specific classification is not a judgment of text quality or a failure
+to recognize its writing system. The saved labels and numerical results do not
+change. `Unknown` within that denominator instead means Nepali
+evidence exists but the record contains no eligible letters/marks.
+
+Earlier reports without saved text keep their original results and display a
+notice to run a new inspection to capture examples. Legacy `sample_size` mode
+and metadata-only runs do not save this example collection.
 Five 20% samples cover approximately **67.2%**, not 100%, on average. The report
 and Streamlit show the **actual measured coverage** as well as this expectation.
 Use `sample_fraction: 1` for complete coverage; repeating full samples adds no
