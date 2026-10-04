@@ -1,0 +1,440 @@
+# Stable IDs for reusable dataset selections. Local paths are relative to this file.
+# Definitions follow saved inspections; Hugging Face revisions are pinned to those reports.
+# Keep models/run settings in ../embeddings.yaml. See ../../docs/dataset-source-registry.md.
+# Registration does not rerun or modify any saved inspection, embedding, or clustering result.
+# Run: venv/bin/python scripts/cluster_dataset.py sources
+version: 1
+sources:
+  huggingface:
+    gorkhapatra-nepali:
+      label: Gorkhapatra Nepali epaper
+      dataset: Aananda-giri/gorkhapatra-nepali-epaper
+      revision: 06ec9d5dbf5d67668df5dc7e7514048dc8a20d2f
+      config: default
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {}
+      text_columns: [text]
+
+    sangraha-verified-nep:
+      label: Sangraha — verified Nepali
+      dataset: ai4bharat/sangraha
+      revision: 8b813c3f62d37b2fa174d68c31e8b35ae2fe85e8
+      config: verified
+      split: nep
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {id: doc_id}
+      text_columns: [text]
+
+    iriis-nepali-text:
+      label: IRIIS Nepali Text Corpus
+      dataset: IRIIS-RESEARCH/Nepali-Text-Corpus
+      revision: 167b56b327996ca2c5fe7f9a6b638aecbb2ae13b
+      config: default
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {id: index, text: Article}
+      text_columns: [Article]
+
+    himalaya-nepali-pdf:
+      label: Himalaya Nepali PDF corpus
+      dataset: himalaya-ai/nepali_pdf_corpus
+      revision: 64226874e938d803827729d57ccf7f6befc1b27e
+      config: default
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {id: id, text: text}
+      text_columns: [text]
+
+    himalaya-nepali-news:
+      label: Himalaya Nepali news corpus
+      dataset: himalaya-ai/nepali-news-corpus
+      revision: 5aab3433b9e76e6f99661128f33313f1e118e555
+      config: default
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {id: id, text: text}
+      text_columns: [text]
+
+    himalaya-nepali-proofreader-test:
+      label: Himalaya Nepali proofreader — evaluation
+      dataset: himalaya-ai/nepali-proofreader
+      revision: 17c8209dc1568f612331af224a6efccff2606a07
+      config: default
+      split: test
+      training_schema: evaluation
+      text_record_unit: line
+      field_mapping: {input: corrupted, reference: clean}
+      task_name: ocr_proofreading
+
+    boredoom-nepali-corpus:
+      label: Boredoom17 Nepali Corpus
+      dataset: Boredoom17/Nepali-Corpus
+      revision: be2b638c2802f4587614c34bd4f7cff430276412
+      config: default
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    # Recorded inspection skipped 42 invalid records. Embedding rejects invalid records; prepare an explicit validated copy first.
+    alpaca-nepali-sft:
+      label: Alpaca Nepali SFT — preparation needed
+      dataset: Saugatkafley/alpaca-nepali-sft
+      revision: 279dc1e1c048e5469a7d4ec19a33a74ab1bb7ce3
+      config: default
+      split: train
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {}
+
+    hermes-function-calling-nepali:
+      label: Hermes function calling — Nepali
+      dataset: himalaya-ai/hermes-function-calling-nepali
+      revision: fe4989c2e030f56a76e5633c327d70c6b1bc9b14
+      config: default
+      split: ne_deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: conversations}
+
+    bactrian-x-ne:
+      label: Bactrian-X — Nepali
+      dataset: MBZUAI/Bactrian-X
+      revision: 3698480a001cb3f62c61c314d4acb181eb31e983
+      config: ne
+      split: train
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {}
+
+    culturax-ne:
+      label: CulturaX — Nepali
+      dataset: uonlp/CulturaX
+      revision: 6a8734bc69fefcbb7735f4f9250f43e4cd7a442e
+      config: ne
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    c4-ne:
+      label: C4 — Nepali
+      dataset: allenai/c4
+      revision: 1588ec454efa1a09f29cd18ddd04fe05fc8653a2
+      config: ne
+      split: train
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    toxi-text-ne:
+      label: Toxi-text-3M — Nepali rows
+      dataset: FredZhang7/toxi-text-3M
+      revision: e1e50df2f511e62d921448c40bd64b7308ac6ede
+      config: default
+      split: train
+      training_schema: task_specific_supervised
+      text_record_unit: line
+      field_mapping: {text: text, label: is_toxic}
+      task_name: toxicity_classification
+      text_columns: [text]
+      row_filters:
+        lang: [ne]
+
+    # Separate orientations: combining lang1 and lang2 filters would require BOTH to be Nepali.
+    nllb-ne-text1:
+      label: NLLB sample — Nepali in text1
+      dataset: slone/nllb-200-10M-sample
+      revision: 112cd775b7d7146372f560738eda4fd53c8a563d
+      config: default
+      split: train
+      training_schema: task_specific_supervised
+      text_record_unit: line
+      field_mapping: {text: text1, label: text2}
+      task_name: translation
+      text_columns: [text1]
+      row_filters:
+        lang1: [npi_Deva]
+
+    nllb-ne-text2:
+      label: NLLB sample — Nepali in text2
+      dataset: slone/nllb-200-10M-sample
+      revision: 112cd775b7d7146372f560738eda4fd53c8a563d
+      config: default
+      split: train
+      training_schema: task_specific_supervised
+      text_record_unit: line
+      field_mapping: {text: text2, label: text1}
+      task_name: translation
+      text_columns: [text2]
+      row_filters:
+        lang2: [npi_Deva]
+
+    # Both context and question form the input. A field_mapping.text override would discard that selection.
+    multi-wiki-qa-ne:
+      label: Multi Wiki QA — Nepali
+      dataset: alexandrainst/multi-wiki-qa
+      revision: 9bdb3350487e399bd1cd873e1395290d636db5ce
+      config: ne
+      split: train
+      training_schema: task_specific_supervised
+      text_record_unit: line
+      field_mapping: {label: answers.text}
+      task_name: question_answering
+      text_columns: [context, question]
+
+    updesh-ne-analytical-reasoning:
+      label: Updesh Nepali — analytical_reasoning
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: analytical_reasoning
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-brain-teaser:
+      label: Updesh Nepali — brain_teaser
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: brain_teaser
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-causal-reasoning:
+      label: Updesh Nepali — causal_reasoning
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: causal_reasoning
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-creative-writing:
+      label: Updesh Nepali — creative_writing
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: creative_writing
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-cultural-multihop-reasoning:
+      label: Updesh Nepali — cultural_multihop_reasoning
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: cultural_multihop_reasoning
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-dialog-gen:
+      label: Updesh Nepali — dialog_gen
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: dialog_gen
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-fermi:
+      label: Updesh Nepali — fermi
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: fermi
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    # Full inspection skipped 4 empty assistant messages; embedding does not silently skip them.
+    updesh-ne-fs-cot-flow:
+      label: Updesh Nepali — fs_cot_flow (preparation needed for full runs)
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: fs_cot_flow
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-logical-reasoning:
+      label: Updesh Nepali — logical_reasoning
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: logical_reasoning
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-math:
+      label: Updesh Nepali — math
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: math
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-mcq:
+      label: Updesh Nepali — mcq
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: mcq
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-multihop-reasoning:
+      label: Updesh Nepali — multihop_reasoning
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: multihop_reasoning
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    # Full inspection skipped 10 empty user/assistant records; embedding does not silently skip them.
+    updesh-ne-rc:
+      label: Updesh Nepali — rc (preparation needed for full runs)
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: rc
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-summarization:
+      label: Updesh Nepali — summarization
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: summarization
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    # Full inspection skipped 2 empty assistant messages; embedding does not silently skip them.
+    updesh-ne-text-classification:
+      label: Updesh Nepali — text_classification (preparation needed for full runs)
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: text_classification
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-translation-enxx:
+      label: Updesh Nepali — translation_enxx
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: translation_enxx
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+    updesh-ne-translation-xxen:
+      label: Updesh Nepali — translation_xxen
+      dataset: microsoft/Updesh_beta
+      revision: 73ed1f8e0850656150a3d97261eeab749cc6a7b2
+      config: translation_xxen
+      split: npi_Deva
+      training_schema: instruction_finetuning
+      text_record_unit: line
+      field_mapping: {messages: messages}
+
+  kaggle:
+    oscar-nepali-kaggle:
+      label: OSCAR Nepali — deduplicated Kaggle corpus
+      dataset: hsebarp/oscar-corpus-nepali/versions/1
+      dataset_file: ne_dedup.txt
+      training_schema: pretraining
+      text_record_unit: line
+      text_columns: [text]
+      languages: [ne]
+
+    # Task name matches the saved inspections for both workbooks.
+    nepali-hate-speech-brb:
+      label: Nepali hate speech — brb.xlsx
+      dataset: mohanbhandari/nepali-hate-speech-collection/versions/1
+      dataset_file: brb.xlsx
+      training_schema: task_specific_supervised
+      field_mapping: {text: Cleaned, label: Category}
+      task_name: offensive_term_category
+      text_columns: [Cleaned]
+
+    nepali-hate-speech-lexicon:
+      label: Nepali hate speech — lexicon workbook
+      dataset: mohanbhandari/nepali-hate-speech-collection/versions/1
+      dataset_file: Nepali hate speech.xlsx
+      training_schema: task_specific_supervised
+      field_mapping: {text: NormNep, label: Class}
+      task_name: offensive_term_category
+      text_columns: [NormNep]
+
+  local:
+    # Downloaded Nepali monolingual portion of Helsinki-NLP/multi_para_crawl / OPUS v7.1.
+    multiparacrawl-ne-v7-1:
+      label: MultiParaCrawl v7.1 — Nepali sentences
+      local: ../../artifacts/datasets/multiparacrawl-v7.1/ne.txt
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    # Keep separate from OSCAR sources: identical filenames do not establish provenance.
+    local-ne-text:
+      label: Local ne.txt — original source unverified
+      local: ../../ne.txt
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {}
+      text_columns: [text]
+
+    clean-nepberta-text:
+      label: Local cleaned NepBERTa corpus
+      local: /home/olive/Downloads/clean_nepberta_data/clean_date_categories.csv
+      training_schema: pretraining
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    # Planned local extraction of nthngdy/oscar-mini data/ne.gz; file is not downloaded yet.
+    # Use blank-line document boundaries from the original loader.
+    # Pinned download and preparation details: ../../docs/dataset-source-registry.md
+    oscar-mini-ne:
+      label: OSCAR mini — Nepali (download required)
+      local: ../../artifacts/datasets/oscar-mini/ne.txt
+      training_schema: pretraining
+      text_record_unit: blank_line
+      field_mapping: {text: text}
+      text_columns: [text]
+
+    # Synthetic demonstration data; not part of the research source inventory.
+    semantic-demo:
+      label: Small Nepali demonstration corpus
+      local: semantic-demo.jsonl
+      training_schema: pretraining
+      field_mapping: {text: text}
+      text_columns: [text]
