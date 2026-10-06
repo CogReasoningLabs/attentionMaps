@@ -382,19 +382,20 @@ def huggingface_records(
     """Open a Hugging Face iterable dataset without downloading all rows."""
 
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401 - optional dependency check
     except ImportError as error:
         raise RuntimeError(
             "Hugging Face EDA requires the 'datasets' package"
         ) from error
-    arguments: dict[str, Any] = {
-        "split": spec.split,
-        "streaming": True,
-        "token": token or None,
-    }
-    if spec.revision:
-        arguments["revision"] = spec.revision
-    dataset = load_dataset(spec.dataset_id, spec.config_name, **arguments)
+    from attention_maps.datasets.huggingface import load_huggingface_stream
+
+    dataset = load_huggingface_stream(
+        spec.dataset_id,
+        spec.config_name,
+        split=spec.split,
+        revision=spec.revision,
+        token=token,
+    ).stream
     if config.shuffle_buffer_size:
         dataset = dataset.shuffle(
             seed=config.seed,

@@ -15,6 +15,9 @@ from urllib.parse import unquote, urlparse
 from .catalog import DatasetSpec
 from .file_formats import describe_dataset_formats
 from .source_imports import normalize_huggingface_id
+from .huggingface_adapters import (
+    ADAPTER_DATASETS, adapter_configuration, adapter_configurations, load_selected_adapter,
+)
 
 
 def discover_huggingface_dataset(
@@ -31,10 +34,17 @@ def discover_huggingface_dataset(
             dataset_id, revision=revision or "main", files_metadata=True
         )
         resolved_revision = info.sha
+        adapter_configs = None
         try:
-            configs = get_dataset_config_names(
-                dataset_id, revision=resolved_revision, token=token
-            )
+            if dataset_id in ADAPTER_DATASETS:
+                adapter_configs = adapter_configurations(
+                    dataset_id, {item.rfilename: item.size for item in info.siblings or []}
+                )
+                configs = list(adapter_configs)
+            else:
+                configs = get_dataset_config_names(
+                    dataset_id, revision=resolved_revision, token=token
+                )
             raw_data_files = None
         except Exception as error:
             if (dataset_id != "MBZUAI/Bactrian-X"
@@ -66,6 +76,8 @@ def discover_huggingface_dataset(
     }
     if raw_data_files is not None:
         catalog.update(dataset_loader="json", raw_data_files=raw_data_files)
+    if adapter_configs is not None:
+        catalog.update(dataset_loader="source_adapter", adapter_configs=adapter_configs)
     return catalog
 
 
@@ -92,6 +104,8 @@ def inspect_huggingface_configuration(
 
     if config not in catalog["configs"]:
         raise ValueError(f"Unknown dataset configuration: {config}")
+    if catalog.get("dataset_loader") == "source_adapter":
+        return adapter_configuration(catalog, config)
     if catalog.get("dataset_loader") == "json":
         relative = catalog["raw_data_files"][config]
         shard = {"path": f"hf://datasets/{catalog['dataset_id']}@{catalog['revision']}/{relative}",
@@ -150,6 +164,10 @@ def load_selected_huggingface_stream(
     *, loader: str | None = None, token: str | None = None, filters=None,
 ):
     """Load pinned source files, bypassing obsolete repository builder scripts."""
+    if loader == "source_adapter":
+        return load_selected_adapter(
+            dataset_id, config, split, revision, shards, token=token, filters=filters,
+        )
     from datasets import load_dataset
 
     kwargs = {"split": split, "data_files": {split: list(shards)}, "streaming": True, "token": token}
@@ -174,6 +192,8 @@ def select_huggingface_shards(
         raise ValueError(f"Shards do not belong to this configuration/split: {sorted(unknown)}")
     if not requested:
         raise ValueError("Select at least one shard.")
+    if configuration.get("requires_complete_split") and requested != {item["path"] for item in available}:
+        raise ValueError("This source adapter requires all files for the selected split")
     return [item for item in available if item["path"] in requested]
 
 
@@ -256,6 +276,31 @@ def inspect_huggingface_selection(
 
     selected = select_huggingface_shards(configuration, split, shards)
     split_info = configuration["splits"][split]
+    if bool(filter_column) != bool(filter_value):
+        raise ValueError("A Hugging Face filter requires both a column and value")
+    if filter_column and metadata_only:
+        raise ValueError("Metadata-only inspection cannot count filtered records")
+    if configuration.get("dataset_loader") == "source_adapter" and not metadata_only:
+        from .inspection import inspect_huggingface_dataset
+
+        inventory = inspect_huggingface_dataset(
+            configuration["dataset_id"], split, config=configuration["config"],
+            revision=configuration["revision"], token=token,
+            filter_column=filter_column, filter_value=filter_value,
+        )
+        sizes = [item["bytes"] for item in selected]
+        storage = sum(sizes) if all(size is not None for size in sizes) else inventory["hub_file_bytes"]
+        inventory.update(
+            provider="huggingface", dataset_loader="source_adapter",
+            dataset_shards=[item["path"] for item in selected],
+            shards=selected, total_split_shards=len(selected), files=len(selected),
+            file_formats=describe_dataset_formats(selected), metadata_only=False,
+            selection_scope="split", declared_languages=configuration.get("languages", []),
+            bytes=storage, hub_file_bytes=storage,
+            hub_file_size_basis=configuration["hub_file_size_basis"],
+            hub_file_size_scope=configuration["hub_file_size_scope"],
+        )
+        return inventory
     whole_split = len(selected) == len(split_info["shards"])
     rows = split_info["rows"] if whole_split else None
     memory = split_info["memory_bytes"] if whole_split else None
@@ -311,6 +356,8 @@ def inspect_huggingface_selection(
         "selection_scope": "split" if whole_split else "selected shards",
         "rows": rows, "files": len(selected), "bytes": storage,
         "hub_file_bytes": storage, "memory_bytes": memory,
+        "hub_file_size_basis": configuration.get("hub_file_size_basis", "original files"),
+        "hub_file_size_scope": configuration.get("hub_file_size_scope", "selected split" if whole_split else "selected shards"),
         "memory_bytes_estimated": source.startswith("Parquet"),
         "streaming": True, "row_groups": [], "schema": schema,
         "columns": [field["column"] for field in schema], "schema_variants": variants,

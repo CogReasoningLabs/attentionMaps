@@ -14,6 +14,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
+from attention_maps.datasets.huggingface import load_huggingface_stream
 from attention_maps.datasets.kaggle import (
     inspect_workbook_path,
     sample_kaggle_text_rows,
@@ -341,10 +342,10 @@ def inspect_huggingface_dataset(
     filter_column: str | None = None,
     filter_value: str | None = None,
 ) -> dict[str, Any]:
-    """Read remote streaming metadata without materializing dataset rows."""
+    """Inspect streaming metadata or a source adapter's disk-backed row index."""
 
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401 - optional dependency check
     except ImportError as error:
         raise ValueError("Hugging Face datasets support requires `datasets`") from error
     if bool(filter_column) != bool(filter_value):
@@ -355,15 +356,16 @@ def inspect_huggingface_dataset(
             if filter_column and filter_value
             else {}
         )
-        stream = load_dataset(
+        loaded = load_huggingface_stream(
             dataset_id,
             config,
             split=split,
-            streaming=True,
             revision=revision,
             token=token or None,
             **load_options,
         )
+        stream = loaded.stream
+        config = loaded.config or getattr(stream.info, "config_name", None)
         split_info = (getattr(stream.info, "splits", None) or {}).get(split)
         features = stream.features or {}
     except Exception as error:
@@ -395,10 +397,36 @@ def inspect_huggingface_dataset(
             if isinstance(item, dict) and item.get("num_bytes") is not None
         ]
         hub_file_bytes = sum(int(size) for size in checksum_sizes) or None
+    hub_file_size_basis = "download metadata" if hub_file_bytes is not None else "unavailable"
+    hub_file_size_scope = (
+        "selected configuration" if len(getattr(stream.info, "splits", None) or {}) > 1
+        else "selected split"
+    )
+    if hub_file_bytes is not None and loaded.loading_strategy.startswith("memory_mapped_"):
+        hub_file_size_basis = "original files"
+    if loaded.hub_file_bytes is not None:
+        hub_file_bytes = loaded.hub_file_bytes
+        hub_file_size_basis = loaded.hub_file_size_basis
+        hub_file_size_scope = loaded.hub_file_size_scope
+    # Storage sizes can be absent even when DatasetInfo has rows and decoded
+    # bytes. This optional lookup must not prevent inspection on Viewer failure.
+    # Viewer metadata describes main, so do not apply it to a pinned revision.
+    hub_file_size_error = None
+    if not hub_file_bytes and viewer_size is None and (loaded.revision or revision) in (None, "main"):
+        try:
+            viewer_size = _huggingface_viewer_split_size(
+                dataset_id, config=config, split=split, token=token
+            )
+        except ValueError as error:
+            hub_file_size_error = str(error)
     if not hub_file_bytes and viewer_size is not None:
-        hub_file_bytes = viewer_size.get("num_bytes_original_files") or viewer_size.get(
-            "num_bytes_parquet_files"
-        )
+        original_bytes = viewer_size.get("num_bytes_original_files")
+        parquet_bytes = viewer_size.get("num_bytes_parquet_files")
+        if original_bytes is not None:
+            hub_file_bytes, hub_file_size_basis = original_bytes, "original files"
+        elif parquet_bytes is not None:
+            hub_file_bytes, hub_file_size_basis = parquet_bytes, "converted Parquet"
+        hub_file_size_scope = "selected split"
     if hub_file_bytes is not None:
         hub_file_bytes = int(hub_file_bytes)
     inventory = {
@@ -406,13 +434,18 @@ def inspect_huggingface_dataset(
         "dataset_id": dataset_id,
         "dataset_config": config,
         "dataset_split": split,
-        "dataset_revision": revision,
+        "dataset_revision": loaded.revision or revision,
+        "loading_strategy": loaded.loading_strategy,
+        "dataset_parquet_files": list(loaded.parquet_files),
         "rows": rows,
         "files": shard_count,
         # Prefer physical/download bytes for storage displays. SplitInfo's
         # num_bytes is the decoded Arrow footprint, not disk usage.
         "bytes": hub_file_bytes if hub_file_bytes is not None else memory_bytes,
         "hub_file_bytes": hub_file_bytes,
+        "hub_file_size_basis": hub_file_size_basis,
+        "hub_file_size_scope": hub_file_size_scope,
+        "hub_file_size_error": hub_file_size_error,
         "memory_bytes": memory_bytes,
         "streaming": True,
         "row_groups": [],
@@ -466,7 +499,7 @@ def _huggingface_viewer_split_size(
     split: str,
     token: str | None,
 ) -> dict[str, Any]:
-    """Fetch bounded split sizes when streaming DatasetInfo omits splits."""
+    """Fetch size metadata for exactly one configuration and split."""
 
     query = urllib.parse.urlencode({"dataset": dataset_id})
     headers = {"Accept": "application/json"}
@@ -481,8 +514,7 @@ def _huggingface_viewer_split_size(
             payload = json.load(response)
     except (OSError, urllib.error.HTTPError, json.JSONDecodeError) as error:
         raise ValueError(
-            "Hugging Face streaming metadata does not include row counts, and "
-            f"Dataset Viewer size lookup failed: {error}"
+            f"Hugging Face Dataset Viewer size lookup failed: {error}"
         ) from error
     split_sizes = payload.get("size", {}).get("splits", [])
     matches = [
@@ -498,8 +530,8 @@ def _huggingface_viewer_split_size(
     if len(matches) != 1 or matches[0].get("num_rows") is None:
         requested = f"{config or '<default>'}/{split}"
         raise ValueError(
-            "Hugging Face streaming metadata does not include row counts, and "
-            f"Dataset Viewer has no unambiguous size entry for {requested}."
+            f"Hugging Face Dataset Viewer has no unambiguous size entry for {requested}. "
+            "The selected source may have incomplete or failed Viewer processing."
         )
     return matches[0]
 
@@ -696,6 +728,28 @@ def sample_text_line_rows(
     )
 
 
+def _load_inventory_huggingface_stream(inventory, *, token=None, filters=()):
+    """Preserve explicit shard selection and legacy adapter inventories."""
+    shards = inventory.get("dataset_shards")
+    if shards is not None:
+        if not shards:
+            raise ValueError("Select at least one Hugging Face shard")
+        from .huggingface import load_selected_huggingface_stream
+
+        return load_selected_huggingface_stream(
+            inventory["dataset_id"], inventory.get("dataset_config"),
+            inventory["dataset_split"], inventory.get("dataset_revision"), shards,
+            loader=inventory.get("dataset_loader"), token=token,
+            filters=list(filters) if filters else None,
+        )
+    return load_huggingface_stream(
+        inventory["dataset_id"], inventory.get("dataset_config"),
+        split=inventory["dataset_split"], revision=inventory.get("dataset_revision"),
+        token=token or None, filters=filters,
+        parquet_files=inventory.get("dataset_parquet_files", ()),
+    ).stream
+
+
 def sample_huggingface_rows(
     inventory: dict[str, Any],
     sample_size: int,
@@ -713,25 +767,10 @@ def sample_huggingface_rows(
         raise ValueError(f"Unknown Hugging Face columns: {sorted(invalid)}")
     if sample_size <= 0:
         return []
-    data_options = (
-        {"data_files": {inventory["dataset_split"]: list(inventory["dataset_shards"])}}
-        if inventory.get("dataset_shards") is not None
-        else {}
-    )
-    if inventory.get("dataset_shards") is not None and not inventory["dataset_shards"]:
-        raise ValueError("Select at least one Hugging Face shard")
     if inventory.get("filter_column") and inventory.get("filter_value"):
         try:
-            from datasets import load_dataset
-
-            stream = load_dataset(
-                inventory["dataset_id"],
-                inventory.get("dataset_config"),
-                split=inventory["dataset_split"],
-                streaming=True,
-                revision=inventory.get("dataset_revision"),
-                token=token or None,
-                **data_options,
+            stream = _load_inventory_huggingface_stream(
+                inventory, token=token,
                 filters=[
                     (
                         inventory["filter_column"],
@@ -769,19 +808,11 @@ def sample_huggingface_rows(
             ) from error
 
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401 - optional dependency check
     except ImportError as error:
         raise ValueError("Hugging Face datasets support requires `datasets`") from error
     try:
-        stream = load_dataset(
-            inventory["dataset_id"],
-            inventory.get("dataset_config"),
-            split=inventory["dataset_split"],
-            streaming=True,
-            revision=inventory.get("dataset_revision"),
-            token=token or None,
-            **data_options,
-        )
+        stream = _load_inventory_huggingface_stream(inventory, token=token)
         stream = stream.shuffle(
             seed=seed,
             buffer_size=max(sample_size, min(int(shuffle_buffer), 5_000)),

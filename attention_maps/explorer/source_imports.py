@@ -12,6 +12,8 @@ from attention_maps.common.google_drive import (
     download_google_drive_path,
     extract_google_drive_id,
 )
+from attention_maps.datasets.flores import FACEBOOK_FLORES_DATASET_ID
+from attention_maps.datasets.indicgenbench import FLORES_IN_DATASET_ID
 from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 
 from .catalog import DEFAULT_DATA_ROOT, DatasetSpec
@@ -196,6 +198,8 @@ def huggingface_source_spec(
     if not clean_split:
         raise ValueError("A Hugging Face split is required.")
     purpose = _purpose_for_schema(schema)
+    if normalized in {FLORES_IN_DATASET_ID, FACEBOOK_FLORES_DATASET_ID}:
+        purpose = "Evaluation / benchmark"
     return DatasetSpec(
         key=f"dynamic:huggingface:{normalized}:{config or ''}:{clean_split}:{revision or ''}",
         label=f"Hugging Face · {normalized} · {clean_split}",

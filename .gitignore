@@ -26,6 +26,7 @@ dist/
 .env.*
 !.env.example
 /credentials.json
+/nepali-llm-dataset-d61e1964d889.json
 /.google-drive-token.json
 .dataset_generator_rate_limits.sqlite3
 .dataset_generator.sqlite3
@@ -50,6 +51,10 @@ dist/
 /artifacts/
 /checkpoints/
 /finetuned_models/**/checkpoint-*/
+/finetuned_models/ckpt-*/
+/finetuned_models/llama2-7b-single_file-qlora/
+/finetuned_models/*.zip
+/finetuned_models/*_export.csv
 /nepali_inference_results.csv
 *.ckpt
 *.pt

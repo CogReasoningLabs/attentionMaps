@@ -414,7 +414,11 @@ class DatasetDisplayTests(unittest.TestCase):
             def __iter__(self):
                 return ({"language_code": "npi"} for _ in range(4_002))
 
-        with patch("datasets.load_dataset", return_value=FakeStream()) as loader:
+        with (
+            patch("datasets.load_dataset", return_value=FakeStream()) as loader,
+            patch("attention_maps.explorer.inspection._huggingface_viewer_split_size",
+                  side_effect=ValueError("Viewer size unavailable")),
+        ):
             inventory = inspect_huggingface_dataset(
                 "CohereLabs/aya_dataset",
                 "train",

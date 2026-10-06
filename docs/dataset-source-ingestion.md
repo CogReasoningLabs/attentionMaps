@@ -14,7 +14,92 @@ adding every dataset to the repository's curated catalog:
 Some very large Hub datasets, including CulturaX, omit split counts from the
 streaming `DatasetInfo`. In that case the loader uses Hugging Face Dataset
 Viewer size metadata for the requested configuration and split; it does not
-scan the corpus to count rows.
+scan the corpus to count rows. File-size lookup is independent: when row counts
+exist but download bytes are missing (for example `Sidharth1743/indicphi`), the
+loader still requests the selected split's Viewer size. The UI labels original
+files versus converted Parquet and identifies split versus configuration scope.
+An optional file-size lookup failure leaves inspection usable with an unknown
+file size; decoded Arrow bytes are never labelled as Hub storage. Optional
+Viewer file-size fallback is skipped for pinned source revisions because the
+Viewer describes the default revision.
+
+`Nandan007/NepFakeV2` has a failed Viewer size job: automatic JSON discovery
+includes both its records and `data/stats.json`. Its adapter explicitly selects
+only `data/nepfakev2.csv`, so neither summary statistics nor duplicate JSON
+exports enter the corpus. Use configuration empty or `default`, split `train`.
+The CSV is downloaded into the Hugging Face cache and parsed in batches of
+1,000 rows into disk-backed Arrow. Inspection gets exact row counts, typed
+columns, original file bytes, and decoded bytes from that cache. Sampling and
+the EDA CLI use the same adapter and resolved source revision; inspection does
+not depend on the Viewer or published statistics.
+
+Legacy Hub repositories such as `MBZUAI/Bactrian-X` still contain Python
+loading scripts that modern `datasets` versions reject. The configuration/shard
+discovery flow reads Bactrian-X's `data/<config>.json.gz` directly at the selected
+commit. For Nepali, choose configuration `ne`, split `train`. Source sampling,
+inspection, and embedding runs retain this JSON loader and the selected files.
+The older inventory API and EDA CLI also support a converted-Parquet fallback
+for legacy script repositories without executing repository code.
+
+The converted-Parquet fallback cannot guarantee an arbitrary source commit or
+tag; such requests fail explicitly instead of silently using another revision.
+Use a versioned script-free export for those runs. Missing or partial conversions
+also fail with an actionable error. See the official
+[Parquet conversion API](https://huggingface.co/docs/dataset-viewer/parquet).
+
+`csebuetnlp/CrossSum` has a legacy loading script and no working Viewer
+conversion. Its adapter reads the original language-pair archive directly,
+without executing repository Python. A configuration is required:
+`nepali-nepali` selects Nepali articles/summaries, `english-nepali` selects
+English articles with Nepali summaries, and `nepali-english` reverses that
+pair. Splits are `train`, `validation`, and `test` (`validation` maps to `_val`).
+
+The selected archive is downloaded once at a resolved Hub commit. Only the
+exact selected JSONL member is read, without extracting archive paths onto the
+filesystem, and records are written to disk-backed Arrow in batches of 1,000.
+The four source columns (`source_url`, `target_url`, `summary`, `text`) remain
+intact. Empty splits stay empty; no placeholder records are generated. Row and
+decoded-byte counts describe the selected split. **Hub file size covers the
+compressed language-pair archive, including all three splits**, which the UI
+labels explicitly. Inspection, sampling, and the EDA CLI use this same reader.
+See the [CrossSum dataset card](https://huggingface.co/datasets/csebuetnlp/CrossSum).
+
+`facebook/flores` requires approved Hugging Face access and a read token from
+that account (`HF_TOKEN`, including gated-repository read permission). Its public
+splits are `dev` and `devtest`, not `train`; use `npi_Deva` for Nepali or
+`eng_Latn-npi_Deva` for aligned English/Nepali. The loader validates these inputs,
+checks access, resolves the requested revision to a commit, and uses the official
+Parquet-based configuration with bounded streaming. File bytes come from the
+selected split's Hub files, not the sum of all configurations or splits. Older
+script-only revisions fail explicitly; the loader does not substitute another
+repository. The workspace labels this source **Evaluation / benchmark**. See the
+[FLORES access page and dataset card](https://huggingface.co/datasets/facebook/flores).
+
+`google/IndicGenBench_flores_in` needs a separate nested-JSON adapter: its
+records live under `examples`, and its Dataset Viewer is disabled. Use
+configuration `ne` (the workspace's language selector) and split `validation`
+or `test`; there is no `train` split. This selects both English→Nepali and
+Nepali→English files and preserves `source`, `target`, `lang`, and
+`translation_direction`. The top-level canary stays outside the data rows.
+
+The selected language/split is cached as memory-mapped Arrow on disk, giving
+exact row counts and a schema without the disabled Viewer API. The cache reads
+one source JSON file at a time; it does download the selected files before
+sampling. The resolved Hub commit is reused for subsequent sampling. This
+source is labelled **Evaluation / benchmark**, including when the generic
+schema selector remains on its default. Keep these benchmark examples out of
+pretraining data. See the
+[dataset card](https://huggingface.co/datasets/google/IndicGenBench_flores_in).
+
+CrossSum, Flores-IN, and NepFakeV2 also participate in the configuration/split
+selectors, `inspect_dataset.py`, and embedding source inspection. Discovery and
+`--formats-only` read repository metadata without downloading records. Normal
+inspection builds their disk-backed row index. These adapters require the
+complete selected split's source files: Flores-IN keeps both translation
+directions together, and CrossSum reads the chosen member of its pair archive.
+Partial file selections are rejected instead of silently expanded. Ordinary
+Hugging Face sources, including the FLORES Parquet export, retain individual
+shard selection.
 
 After registration, every source enters the same workflow:
 
@@ -27,9 +112,11 @@ source inventory
   -> EDA and persisted audit artifacts
 ```
 
-Remote files are cached below `data/cache/source-imports/`; Hugging Face
-streaming does not materialize the complete split. KaggleHub uses its managed
-cache. Cached source material is excluded from Git.
+Remote files are cached below `data/cache/source-imports/`. Ordinary Hugging Face
+streaming does not materialize the complete split; the Flores-IN, NepFakeV2,
+and CrossSum adapters instead use Hugging Face's disk caches for the selected
+files or language-pair archive and the selected split's Arrow index.
+KaggleHub uses its managed cache. Cached source material is excluded from Git.
 
 ## Streamlit usage
 

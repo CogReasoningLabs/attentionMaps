@@ -569,7 +569,10 @@ def run_app() -> None:
                 if hub_file_bytes is not None
                 else "Unknown"
             ),
-            help="Physical source-file bytes for exactly this configuration, split, and shard selection.",
+            help=(
+                "File bytes on Hugging Face; original files and converted Parquet "
+                "can differ. The basis and scope are shown below."
+            ),
         )
         metric_columns[4].metric(
             "Estimated memory size",
@@ -579,11 +582,20 @@ def run_app() -> None:
                 "the download or disk size."
             ),
         )
+        if hub_file_bytes is not None:
+            st.caption(
+                f"Hub file size: {inventory.get('hub_file_size_basis', 'download metadata')} "
+                f"for the {inventory.get('hub_file_size_scope', 'selected split')}."
+            )
+        else:
+            st.caption("Hub file size is unavailable from the source and Viewer metadata.")
         loading_message = (
             "Large remote dataset: bounded streaming mode is active. "
             if hub_file_bytes is not None and hub_file_bytes >= 1024**3
             else "Bounded streaming mode is active. "
         )
+        if inventory.get("loading_strategy", "").startswith("memory_mapped_"):
+            loading_message = "The selected source files are cached on disk. "
         st.info(
             loading_message
             + "Sampling is bounded and the full dataset is not held in memory."

@@ -16,6 +16,14 @@ def render_huggingface_source(
     dataset_id = st.sidebar.text_input(
         "Hugging Face dataset ID", placeholder="owner/dataset", key="source-hf-id"
     ).strip()
+    guidance = {
+        "csebuetnlp/CrossSum": "Use 'nepali-nepali' or 'english-nepali'. The cached language-pair archive includes all splits; only your selected split is indexed.",
+        "facebook/flores": "Evaluation benchmark: use 'npi_Deva' or 'eng_Latn-npi_Deva', split 'dev' or 'devtest'. Accept access conditions on Hugging Face and set HF_TOKEN for that account.",
+        "google/IndicGenBench_flores_in": "Evaluation benchmark: use 'ne', split 'validation' or 'test'. Both translation directions are cached together. Keep benchmark examples out of pretraining.",
+        "Nandan007/NepFakeV2": "Use 'default', split 'train'. Only the records CSV is cached; statistics and duplicate JSON exports are excluded.",
+    }
+    if dataset_id in guidance:
+        st.sidebar.caption(guidance[dataset_id])
     revision = st.sidebar.text_input(
         "Revision (recommended)", placeholder="commit, tag, or branch", key="source-hf-revision"
     ).strip()
@@ -62,7 +70,11 @@ def render_huggingface_selection(
     )
     shard_key = f"{prefix}:{config}:{split}"
     available = configuration["splits"][split]["shards"]
-    mode = st.sidebar.radio("Dataset shards", ("All shards", "Choose shards"), key=f"{shard_key}:mode")
+    if configuration.get("requires_complete_split"):
+        st.sidebar.caption("This source reads all files for the selected split together.")
+        mode = "All shards"
+    else:
+        mode = st.sidebar.radio("Dataset shards", ("All shards", "Choose shards"), key=f"{shard_key}:mode")
     selected = None
     if mode == "Choose shards":
         by_path = {item["path"]: item for item in available}
@@ -92,4 +104,3 @@ def render_huggingface_selection(
             hide_index=True, width="stretch",
         )
     return selected_source_spec(spec, configuration, split, selected), configuration
-
