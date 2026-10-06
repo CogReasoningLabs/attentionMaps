@@ -315,8 +315,10 @@ HimalayaGPT's serialized tokenizer requires `tiktoken`. The app disables
 Streamlit's source watcher because its inspection of Transformers can otherwise
 import optional `torchvision` modules in this text-only application.
 
-The app is intentionally limited to five tabs: **WORKSPACE**, **Dataset
-overlap**, **Source sample**, **Inference**, and **Metadata**. WORKSPACE enforces
+The app has five tabs: **Source sample**, **Metadata**, **WORKSPACE**, **Dataset
+overlap**, and **Inference**. Load and explore a source before choosing its role;
+remote loading does not require a schema or assume pretraining. Choose
+**Dataset role** inside WORKSPACE when ready to preprocess. WORKSPACE enforces
 Sampling → NFC normalization → multi-stage deduplication → EDA. EDA is
 unavailable until preprocessing succeeds and shows only the fixed
 corpus-profile, document-size, text-structure, n-gram, and residual-duplicate

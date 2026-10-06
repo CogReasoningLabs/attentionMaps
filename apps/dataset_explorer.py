@@ -69,7 +69,6 @@ from attention_maps.explorer import (
     stage_s3_object,
     staged_source_spec,
 )
-from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 from apps.explorer_tabs import (
     render_details_tab,
     render_inference_hub,
@@ -80,7 +79,7 @@ from apps.explorer_tabs import (
 )
 
 
-def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec | None:
+def _render_remote_source(st: Any, source_type: str) -> DatasetSpec | None:
     """Render identifier-driven source controls and return a registered source."""
 
     state_key = f"registered-source:{source_type}"
@@ -100,7 +99,7 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
             help="Leave blank to cache the dataset and select one supported file.",
             key="source-kaggle-path",
         )
-        signature = (identifier.strip(), requested_path.strip(), schema)
+        signature = (identifier.strip(), requested_path.strip())
         if st.sidebar.button("Load Kaggle source", type="primary"):
             try:
                 root = stage_kaggle_source(identifier, requested_path)
@@ -113,7 +112,6 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
             state_key=state_key,
             signature=signature,
             source_type=source_type,
-            schema=schema,
             source_prefix=f"kaggle://datasets/{identifier.strip()}",
         )
 
@@ -125,7 +123,7 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
         identifier = st.sidebar.text_input(
             "Drive file/folder ID or URL", key="source-drive-id"
         )
-        signature = (identifier.strip(), schema)
+        signature = (identifier.strip(),)
         if st.sidebar.button("Load Drive source", type="primary"):
             try:
                 root = stage_google_drive_source(identifier)
@@ -138,7 +136,6 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
             state_key=state_key,
             signature=signature,
             source_type=source_type,
-            schema=schema,
             source_prefix=f"gdrive://{identifier.strip()}",
         )
 
@@ -152,7 +149,7 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
             placeholder="s3://bucket/path/dataset.parquet",
             key="source-s3-uri",
         )
-        signature = (uri.strip(), schema)
+        signature = (uri.strip(),)
         if st.sidebar.button("Load S3 object", type="primary"):
             try:
                 root = stage_s3_object(uri)
@@ -165,7 +162,6 @@ def _render_remote_source(st: Any, source_type: str, schema: str) -> DatasetSpec
             state_key=state_key,
             signature=signature,
             source_type=source_type,
-            schema=schema,
             source_prefix=uri.strip(),
         )
 
@@ -178,7 +174,6 @@ def _staged_spec_from_state(
     state_key: str,
     signature: tuple[str, ...],
     source_type: str,
-    schema: str,
     source_prefix: str,
 ) -> DatasetSpec | None:
     saved = st.session_state.get(state_key, {})
@@ -212,7 +207,6 @@ def _staged_spec_from_state(
         return staged_source_spec(
             selected,
             source_type=source_type,
-            schema=schema,
             source_uri=uri,
         )
     except ValueError as error:
@@ -246,9 +240,8 @@ def run_app() -> None:
     )
     st.title("Dataset Preprocessing & EDA Workspace")
     st.caption(
-        "Select a dataset, verify its source and schema, then run Sampling → "
-        "NFC normalization → Deduplication → optional supervised D2 → EDA, "
-        "or compare report-only overlap across catalog datasets."
+        "Load a dataset and explore its source samples and metadata. Choose its "
+        "role in WORKSPACE before sampling, normalization, deduplication, and EDA."
     )
 
     report_path = os.getenv("DATASET_INSPECTION_REPORT", "")
@@ -360,17 +353,13 @@ def run_app() -> None:
     spec: DatasetSpec | None = None
     hf_configuration = None
     if source_type != "Local":
-        schema = st.sidebar.selectbox(
-            "Standard dataset schema", STANDARD_DATASET_SCHEMAS,
-            format_func=lambda item: item.label, key=f"source-schema:{source_type}",
-        ).key
         if source_type == "Hugging Face":
             spec, hf_configuration = render_huggingface_source(
-                st, schema, catalog_loader=hf_catalog_loader,
+                st, catalog_loader=hf_catalog_loader,
                 configuration_loader=hf_configuration_loader,
             )
         else:
-            spec = _render_remote_source(st, source_type, schema)
+            spec = _render_remote_source(st, source_type)
     elif use_custom:
         custom_path_text = source_settings.text_input("Parquet file or directory")
         if custom_path_text:
@@ -682,8 +671,8 @@ def run_app() -> None:
             selected_inventory["source_uri"] = selected_spec.source_uri
         return selected_inventory
 
-    workspace_tab, overlap_tab, sample_tab, inference_tab, metadata_tab = st.tabs(
-        ["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]
+    sample_tab, metadata_tab, workspace_tab, overlap_tab, inference_tab = st.tabs(
+        ["Source sample", "Metadata", "WORKSPACE", "Dataset overlap", "Inference"]
     )
     with workspace_tab:
         if inventory.get("rows") is not None:

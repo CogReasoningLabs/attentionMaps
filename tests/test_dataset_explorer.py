@@ -771,7 +771,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
             schema = next(
                 item
                 for item in app.selectbox
-                if item.label == "Canonical training-data schema"
+                if item.label == "Dataset role"
             )
             self.assertIsNone(schema.value)
             schema.set_value("task_specific_supervised").run(timeout=30)
@@ -799,7 +799,7 @@ class DatasetExplorerAppTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            '["WORKSPACE", "Dataset overlap", "Source sample", "Inference", "Metadata"]',
+            '["Source sample", "Metadata", "WORKSPACE", "Dataset overlap", "Inference"]',
             source,
         )
         overlap_source = (

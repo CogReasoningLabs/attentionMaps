@@ -16,7 +16,7 @@ from attention_maps.datasets.flores import FACEBOOK_FLORES_DATASET_ID
 from attention_maps.datasets.indicgenbench import FLORES_IN_DATASET_ID
 from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS
 
-from .catalog import DEFAULT_DATA_ROOT, DatasetSpec
+from .catalog import DEFAULT_DATA_ROOT, UNCLASSIFIED_PURPOSE, DatasetSpec
 
 
 SOURCE_TYPES = ("Hugging Face", "Kaggle", "Google Drive", "S3", "Local")
@@ -186,12 +186,12 @@ def stage_s3_object(
 def huggingface_source_spec(
     dataset_id: str,
     *,
-    schema: str,
+    schema: str | None = None,
     config: str | None = None,
     split: str = "train",
     revision: str | None = None,
 ) -> DatasetSpec:
-    """Create a streamed Hugging Face source specification."""
+    """Register a streamed source, leaving its role unclassified until chosen."""
 
     normalized = normalize_huggingface_id(dataset_id)
     clean_split = split.strip()
@@ -212,7 +212,7 @@ def huggingface_source_spec(
         dataset_revision=(revision or "").strip() or None,
         provider="Hugging Face Hub",
         purpose_path=(purpose,),
-        tags=("dynamic source", schema),
+        tags=("dynamic source", schema) if schema is not None else ("dynamic source",),
     )
 
 
@@ -220,7 +220,7 @@ def staged_source_spec(
     path: Path,
     *,
     source_type: str,
-    schema: str,
+    schema: str | None = None,
     source_uri: str | None = None,
 ) -> DatasetSpec:
     """Create a source spec for one selected local or staged remote file."""
@@ -244,11 +244,13 @@ def staged_source_spec(
         source_uri=source_uri,
         provider=source_type,
         purpose_path=(purpose,),
-        tags=("dynamic source", schema),
+        tags=("dynamic source", schema) if schema is not None else ("dynamic source",),
     )
 
 
-def _purpose_for_schema(schema: str) -> str:
+def _purpose_for_schema(schema: str | None) -> str:
+    if schema is None:
+        return UNCLASSIFIED_PURPOSE[0]
     try:
         return _SCHEMA_PURPOSES[schema]
     except KeyError as error:

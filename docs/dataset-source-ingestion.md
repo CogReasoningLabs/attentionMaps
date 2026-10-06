@@ -105,6 +105,8 @@ After registration, every source enters the same workflow:
 
 ```text
 source inventory
+  -> source sample and metadata exploration
+  -> dataset role selection in WORKSPACE
   -> bounded deterministic sampling
   -> NFC normalization
   -> exact/near deduplication
@@ -122,13 +124,20 @@ KaggleHub uses its managed cache. Cached source material is excluded from Git.
 
 1. Run `python scripts/run_dataset_explorer.py`.
 2. Choose **Data source** in the sidebar.
-3. Select one of the four standard training-data schemas. This preserves the
-   correct atomic unit and restricts D2 to task-specific supervised datasets.
-4. Enter the provider's standard identifier and select **Load ... source**.
-5. For Hugging Face, choose **Dataset configuration**, **Dataset split**, and
+3. Enter the provider's standard identifier and select **Load ... source**.
+   No dataset role or training schema is required to load it. New sources remain
+   unclassified; known FLORES benchmarks retain their evaluation purpose.
+4. For Hugging Face, choose **Dataset configuration**, **Dataset split**, and
    **All shards** or **Choose shards**. Sizes and samples follow this selection.
    For a staged folder or multi-file Kaggle dataset, select the dataset file.
-6. Use **WORKSPACE** to sample, normalize, deduplicate, optionally prune, and
+5. Explore **Source sample** and **Metadata** to understand the actual fields,
+   complete records, labels, and intended use.
+6. In **WORKSPACE**, choose **Dataset role** after inspection. Its choices are
+   the four training schemas plus evaluation; D2 is available only for
+   task-specific supervised data. Changing the role preserves the loaded source
+   and selected files, clears earlier in-memory processing results, and records
+   the chosen schema in new workspace manifests.
+7. Use **WORKSPACE** to sample, normalize, deduplicate, optionally prune, and
    generate EDA artifacts.
 
 Pin Hugging Face revisions to a commit for research runs. A branch such as

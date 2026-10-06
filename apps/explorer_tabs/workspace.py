@@ -15,6 +15,7 @@ from attention_maps.common.google_drive import (
     upload_path_to_google_drive,
 )
 from attention_maps.common.pipeline_logging import pipeline_logger
+from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS, infer_training_schema
 from attention_maps.eda.contracts import AnalysisConfig, SurveyPlan, SurveyRun
 from attention_maps.eda.deduplication import DeduplicationConfig
 from attention_maps.eda.pipeline import analyze_records
@@ -46,6 +47,29 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         "Run each gate in order. The selected source dataset stays immutable; "
         "the workspace creates a sampled, NFC-normalized, deduplicated copy for EDA."
     )
+    schemas = {schema.key: schema for schema in STANDARD_DATASET_SCHEMAS}
+    inferred = next((tag for tag in spec.tags if tag in schemas), None)
+    if inferred is None:
+        inferred = ("evaluation" if spec.primary_purpose == "Evaluation / benchmark"
+                    else infer_training_schema(spec.primary_purpose))
+    schema_keys = [None, *schemas]
+    selected_schema = st.selectbox(
+        "Dataset role",
+        schema_keys,
+        index=schema_keys.index(inferred) if inferred in schema_keys else 0,
+        format_func=lambda key: schemas[key].label if key else "Not classified yet",
+        key=f"workspace-schema:{spec.key}",
+        help="Inspect Source sample and Metadata first, then choose the intended role for this workspace.",
+    )
+    state_key = f"cleaning-workspace:{spec.key}"
+    state = st.session_state.setdefault(state_key, {})
+    if state.get("training_schema") != selected_schema:
+        state.clear()
+        state["training_schema"] = selected_schema
+    if selected_schema is None:
+        st.info("Explore Source sample and Metadata, then choose a dataset role here to start preprocessing.")
+        return
+    st.caption(schemas[selected_schema].description)
     candidates = text_columns(inventory["schema"])
     if not candidates or int(inventory["rows"]) <= 0:
         st.info("This dataset has no detectable text fields for the workspace.")
@@ -153,11 +177,9 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
             f"{sampling.effective_percentage_per_fold:.4g}%."
         )
 
-    state_key = f"cleaning-workspace:{spec.key}"
-    state = st.session_state.setdefault(state_key, {})
     if st.button("Reset this dataset workspace", key=f"workspace-reset:{spec.key}"):
         LOGGER.info("WORKSPACE RESET dataset=%s", spec.key)
-        st.session_state[state_key] = {}
+        st.session_state[state_key] = {"training_schema": selected_schema}
         state = st.session_state[state_key]
 
     shared_key = eda_dataset_spec(
@@ -181,7 +203,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
     )
     _render_normalization_step(st, state, spec)
     _render_deduplication_step(st, state, spec)
-    render_d2_pruning_step(st=st, state=state, spec=spec)
+    render_d2_pruning_step(st=st, state=state, spec=spec, selected_schema=selected_schema)
     _render_clean_eda_step(st, state, spec)
     _render_drive_upload(st, state, spec)
 
@@ -331,9 +353,11 @@ def _render_sampling_step(
                     len(rows),
                     len(unique),
                 )
+            training_schema = state["training_schema"]
             state.clear()
             state.update(
                 {
+                    "training_schema": training_schema,
                     "sample_records": tuple(unique.values()),
                     "sampling_complete": True,
                     "sample_unique_rows": len(unique),
@@ -592,6 +616,7 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                     "dataset_split": spec.dataset_split,
                     "dataset_revision": spec.dataset_revision,
                     "dataset_shards": spec.dataset_shards,
+                    "training_schema": state["training_schema"],
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "sampling": state["sample_plan"].as_dict(),
                     "normalization": "NFC",

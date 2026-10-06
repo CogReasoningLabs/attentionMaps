@@ -48,6 +48,31 @@ class SourceImportTests(unittest.TestCase):
         self.assertEqual(spec.primary_purpose, "Task-specific fine-tuning")
         self.assertIn("@abc123", str(spec.location))
 
+    def test_sources_can_be_registered_before_their_role_is_known(self):
+        from attention_maps.explorer.catalog import UNCLASSIFIED_PURPOSE
+
+        spec = huggingface_source_spec("owner/unexplored", config="default", split="train")
+        self.assertEqual(spec.purpose_path, UNCLASSIFIED_PURPOSE)
+        self.assertEqual(spec.tags, ("dynamic source",))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "records.csv"
+            path.write_text("text,label\na,0\nb,1\n", encoding="utf-8")
+            for provider in ("Kaggle", "Google Drive", "S3", "Local"):
+                with self.subTest(provider=provider):
+                    spec = staged_source_spec(path, source_type=provider)
+                    self.assertEqual(spec.purpose_path, UNCLASSIFIED_PURPOSE)
+                    self.assertEqual(spec.tags, ("dynamic source",))
+
+    def test_benchmarks_keep_known_purpose_without_a_schema_choice(self):
+        for dataset in ("facebook/flores", "google/IndicGenBench_flores_in"):
+            with self.subTest(dataset=dataset):
+                spec = huggingface_source_spec(dataset)
+                self.assertEqual(spec.primary_purpose, "Evaluation / benchmark")
+
+    def test_explicit_invalid_schema_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown standard dataset schema"):
+            huggingface_source_spec("owner/data", schema="invalid")
+
     def test_evaluation_schema_has_evaluation_catalog_purpose(self):
         spec = huggingface_source_spec(
             "owner/evaluation", schema="evaluation", config="default", split="test",

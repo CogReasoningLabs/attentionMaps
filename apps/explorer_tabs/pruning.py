@@ -8,11 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from attention_maps.datasets import (
-    STANDARD_TRAINING_SCHEMAS,
-    TASK_SPECIFIC_SUPERVISED_SCHEMA,
-    infer_training_schema,
-)
+from attention_maps.datasets import TASK_SPECIFIC_SUPERVISED_SCHEMA
 from attention_maps.pruning import D2PruningConfig
 from attention_maps.pruning.workspace import (
     difficulty_from_confidence_artifact,
@@ -32,30 +28,16 @@ EMBEDDINGS_MODEL = "Generate XLM-R embeddings"
 EMBEDDINGS_UPLOAD = "Upload precomputed embeddings (.npz)"
 
 
-def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any) -> None:
+def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any, selected_schema: str) -> None:
     st.markdown("#### Step 4 · D2 supervised data pruning")
-    schema_keys = [None, *(schema.key for schema in STANDARD_TRAINING_SCHEMAS)]
-    labels = {schema.key: schema.label for schema in STANDARD_TRAINING_SCHEMAS}
-    inferred = infer_training_schema(spec.primary_purpose)
-    selected_schema = st.selectbox(
-        "Canonical training-data schema",
-        schema_keys,
-        index=schema_keys.index(inferred) if inferred in schema_keys else 0,
-        format_func=lambda key: labels.get(key, "Not classified"),
-        key=f"d2-schema:{spec.key}",
-        help=(
-            "The project defines four standard schemas. D2 is currently enabled "
-            "only for task-specific supervised data."
-        ),
-    )
     st.caption(
         "Schema contract: docs/standard-training-data-schemas.md. The source and "
         "full deduplicated workspace remain unchanged."
     )
     if selected_schema != TASK_SPECIFIC_SUPERVISED_SCHEMA:
         st.info(
-            "D2 is intentionally unavailable for this schema. Select "
-            "Task-specific supervised only when the records are labelled "
+            "D2 requires the Task-specific supervised dataset role, selected "
+            "at the start of WORKSPACE, for labelled "
             "traditional-NLP or domain-specific training examples."
         )
         return

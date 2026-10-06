@@ -10,7 +10,7 @@ from attention_maps.explorer.text import format_decimal_bytes
 
 
 def render_huggingface_source(
-    st: Any, schema: str, *, catalog_loader: Any, configuration_loader: Any,
+    st: Any, *, catalog_loader: Any, configuration_loader: Any,
 ) -> tuple[Any, dict | None]:
     st.sidebar.caption("Discover configurations and splits, then choose all or specific shards.")
     dataset_id = st.sidebar.text_input(
@@ -40,7 +40,7 @@ def render_huggingface_source(
     saved = st.session_state.get(state_key, {})
     if saved.get("signature") != signature:
         return None, None
-    spec = huggingface_source_spec(dataset_id, schema=schema, revision=revision)
+    spec = huggingface_source_spec(dataset_id, revision=revision)
     return render_huggingface_selection(
         st, spec, saved["catalog"], configuration_loader=configuration_loader
     )
