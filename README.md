@@ -325,7 +325,17 @@ corpus-profile, document-size, text-structure, n-gram, and residual-duplicate
 visualizations plus a fixed-default WordCloud. Dataset overlap is a read-only,
 sampled comparison for within-source duplicate ratios and every directional
 pair among the selected catalog sources; it does not remove rows. Source sample
-is a bounded verification view. Inference contains one selector for model
+is a bounded verification view. In **Source sample**, use **Columns to read**
+to choose displayed fields and expand **Row filters** to select filter columns.
+For example, select `language` and enter `Nepali` under **Allowed values for language**
+to preview matching Aya records while displaying only `inputs` and `targets`.
+Values are exact and case-sensitive; enter alternatives on separate lines.
+Filters across columns are combined with AND, alternatives within a column with OR.
+The sample is drawn from matching rows in the first **Maximum rows to scan**
+source records (100,000 by default). The UI reports scanned and matching counts;
+increase the limit to search farther. Clear **Filter rows by** to remove the filters.
+These controls affect Source sample only; WORKSPACE and saved inspections use their
+own selections. Inference contains one selector for model
 comparison, local base-vs-finetuned, translation evaluation, or decoder
 benchmarks. Metadata contains schema and manifest evidence. The sidebar accepts
 Hugging Face, Kaggle, Google Drive, S3, and local sources. Use the custom-path
