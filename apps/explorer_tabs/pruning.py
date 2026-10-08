@@ -29,17 +29,23 @@ EMBEDDINGS_UPLOAD = "Upload precomputed embeddings (.npz)"
 
 
 def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any, selected_schema: str) -> None:
-    st.markdown("#### Step 4 · D2 supervised data pruning")
+    st.markdown("#### Step 4 · D2 supervised data pruning (optional)")
     st.caption(
-        "Schema contract: docs/standard-training-data-schemas.md. The source and "
-        "full deduplicated workspace remain unchanged."
+        "You can continue directly from Step 3 to Step 5. EDA uses the full "
+        "deduplicated workspace with your selected language, whether D2 is run or skipped."
     )
     if selected_schema != TASK_SPECIFIC_SUPERVISED_SCHEMA:
         st.info(
-            "D2 requires the Task-specific supervised dataset role, selected "
-            "at the start of WORKSPACE, for labelled "
-            "traditional-NLP or domain-specific training examples."
+            "Optional D2 applies to the Task-specific supervised dataset role. "
+            "Continue to Step 5 for EDA with this role."
         )
+        return
+    if not st.checkbox(
+        "Enable optional D2 pruning",
+        value=False,
+        key=f"d2-enabled:{spec.key}",
+    ):
+        st.info("Step 4 skipped. Continue to Step 5 after deduplication.")
         return
     if _is_protected_split(spec):
         st.error("D2 cannot run on validation or test datasets.")

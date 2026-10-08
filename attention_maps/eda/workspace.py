@@ -239,8 +239,13 @@ def persist_workspace_artifacts(
     output_dir: Path,
     *,
     metadata: Mapping[str, Any],
+    normalization: NormalizationResult | None = None,
+    sampling_summary: Mapping[str, Any] | None = None,
+    sampling_folds: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[Path, ...]:
     """Persist one auditable clean workspace run without touching source data."""
+
+    from .workspace_reports import deduplication_summary, records_csv
 
     output_dir.mkdir(parents=True, exist_ok=False)
     clean_path = output_dir / "clean_sample.jsonl"
@@ -248,6 +253,19 @@ def persist_workspace_artifacts(
     manifest_path = output_dir / "workspace_manifest.json"
     clean_path.write_bytes(workspace_documents_jsonl(result.documents))
     audit_path.write_bytes(workspace_audit_csv(result))
+    summary_path = output_dir / "deduplication_summary.csv"
+    summary_path.write_bytes(records_csv([
+        deduplication_summary(result, metadata=metadata, normalization=normalization)
+    ]))
+    paths = [clean_path, audit_path, manifest_path, summary_path]
+    if sampling_summary is not None:
+        sample_path = output_dir / "sampling_summary.csv"
+        sample_path.write_bytes(records_csv([sampling_summary]))
+        paths.append(sample_path)
+    if sampling_folds:
+        folds_path = output_dir / "sampling_folds.csv"
+        folds_path.write_bytes(records_csv(sampling_folds))
+        paths.append(folds_path)
     manifest = {
         **dict(metadata),
         "deduplication_result": {
@@ -268,9 +286,11 @@ def persist_workspace_artifacts(
         },
         "source_dataset_modified": False,
         "clean_sample_contains_text": True,
+        "artifacts": [path.name for path in paths],
+        "sampling_observed": dict(sampling_summary) if sampling_summary is not None else None,
     }
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    return clean_path, audit_path, manifest_path
+    return tuple(paths)

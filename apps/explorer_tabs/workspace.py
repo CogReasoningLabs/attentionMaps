@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from attention_maps.common.google_drive import (
@@ -30,6 +31,11 @@ from attention_maps.eda.workspace import (
     workspace_audit_csv,
     workspace_documents_jsonl,
 )
+from attention_maps.eda.workspace_reports import (
+    persist_sampling_reports,
+    records_csv,
+    sampling_summary,
+)
 from attention_maps.explorer import dataset_size_bucket, format_bytes
 from attention_maps.explorer.language_status import LANGUAGE_FIELDS
 
@@ -47,8 +53,8 @@ LOGGER = pipeline_logger("workspace")
 def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> None:
     st.markdown("### Dataset cleaning WORKSPACE")
     st.caption(
-        "Run each gate in order. The selected source dataset stays immutable; "
-        "the workspace creates a sampled, NFC-normalized, deduplicated copy for EDA."
+        "Run Steps 1–3, then continue to Step 5 for EDA. Step 4 (D2 pruning) is optional. "
+        "The workspace creates a sampled, NFC-normalized, deduplicated copy of the source."
     )
     schemas = {schema.key: schema for schema in STANDARD_DATASET_SCHEMAS}
     inferred = next((tag for tag in spec.tags if tag in schemas), None)
@@ -281,6 +287,8 @@ def _render_sampling_step(
         progress = st.progress(0, text="Preparing deterministic fold samples…")
         status = st.status("Sampling selected dataset…", expanded=True)
         try:
+            sampling_started = perf_counter()
+            sampling_run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             LOGGER.info(
                 "STEP 1 START dataset=%s population=%d requested_pct=%.4f "
                 "effective_pct=%.4f folds=%d rows_per_fold=%d seed=%d disjoint=%s",
@@ -305,6 +313,7 @@ def _render_sampling_step(
             )
             unique: dict[tuple[str, str], dict[str, Any]] = {}
             actual_reads = 0
+            fold_reports = []
             disjoint_rows = (
                 sample_dataset_rows(
                     inventory,
@@ -351,11 +360,14 @@ def _render_sampling_step(
                         selected_fields,
                     )
                 actual_reads += len(rows)
+                previous_unique = len(unique)
+                stable_fold = True
                 for fallback, row in enumerate(rows):
                     stable_identity = row.get(
                         "__viewer_identity_stable",
                         inventory.get("format") != "huggingface",
                     )
+                    stable_fold = stable_fold and bool(stable_identity)
                     key = (
                         str(row.get("__viewer_file", "")),
                         (
@@ -366,6 +378,21 @@ def _render_sampling_step(
                     )
                     row["__viewer_workspace_identity"] = key[1]
                     unique.setdefault(key, row)
+                fold_reports.append({
+                    "run_id": sampling_run_id,
+                    "dataset_key": spec.key,
+                    "fold": fold_index,
+                    "seed": seed if sampling.disjoint_folds else current_seed,
+                    "mode": "disjoint_partition" if sampling.disjoint_folds else "independent_sample",
+                    "planned_rows": (
+                        min(sampling.rows_per_fold, max(0, sampling.total_rows_read - (fold_index - 1) * sampling.rows_per_fold))
+                        if sampling.disjoint_folds else sampling.rows_per_fold
+                    ),
+                    "returned_rows": len(rows),
+                    "new_workspace_rows": len(unique) - previous_unique,
+                    "rows_collapsed_by_identity": len(rows) - (len(unique) - previous_unique),
+                    "source_identity_stable": stable_fold,
+                })
                 progress.progress(
                     round(100 * fold_index / sampling.folds),
                     text=f"Completed sample fold {fold_index}/{sampling.folds}",
@@ -379,6 +406,36 @@ def _render_sampling_step(
                     len(unique),
                 )
             training_schema = state["training_schema"]
+            summary = sampling_summary(
+                sampling,
+                fold_reports,
+                metadata={
+                    "run_id": sampling_run_id,
+                    "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "dataset_key": spec.key,
+                    "dataset_label": spec.label,
+                    "dataset_location": str(spec.location),
+                    "dataset_id": spec.dataset_id,
+                    "dataset_config": spec.dataset_config,
+                    "dataset_split": spec.dataset_split,
+                    "dataset_revision": spec.dataset_revision,
+                    "dataset_shards": spec.dataset_shards,
+                    "source_format": inventory.get("format"),
+                    "source_selection": {key: inventory.get(key) for key in ("filter_column", "filter_value", "row_filters")},
+                    "training_schema": training_schema,
+                    "text_fields": text_fields,
+                    "source_fields": source_fields,
+                    "label_field": label_field,
+                    "language_field": language_field,
+                    "seed": seed,
+                    "sampling_elapsed_seconds": round(perf_counter() - sampling_started, 6),
+                },
+            )
+            workspace_key = eda_dataset_spec(spec, text_fields, source_fields, 1).key
+            sampling_artifacts = persist_sampling_reports(
+                summary, fold_reports,
+                configured_eda_output_root() / "workspace" / workspace_key / "sampling" / sampling_run_id,
+            )
             state.clear()
             state.update(
                 {
@@ -388,6 +445,9 @@ def _render_sampling_step(
                     "sample_unique_rows": len(unique),
                     "sample_reads": actual_reads,
                     "sample_plan": sampling,
+                    "sampling_summary": summary,
+                    "sampling_folds": fold_reports,
+                    "sampling_artifacts": sampling_artifacts,
                     "text_fields": text_fields,
                     "source_fields": source_fields,
                     "label_field": label_field,
@@ -408,9 +468,26 @@ def _render_sampling_step(
             st.error(f"Sampling failed: {error}")
     if state.get("sampling_complete"):
         st.success(
-            f"Sample ready: {state['sample_unique_rows']:,} unique rows from "
-            f"{state['sample_reads']:,} fold reads."
+            f"Sample ready: {state['sample_unique_rows']:,} workspace rows from "
+            f"{state['sample_reads']:,} returned sample rows."
         )
+        if state.get("sampling_summary"):
+            st.caption(f"Sampling CSVs saved in: {state['sampling_artifacts'][0].parent}")
+            downloads = st.columns(2)
+            downloads[0].download_button(
+                "Download sampling summary CSV", records_csv([state["sampling_summary"]]),
+                file_name=f"{spec.key}-sampling-summary.csv", mime="text/csv",
+                key=f"workspace-sampling-summary:{spec.key}",
+            )
+            downloads[1].download_button(
+                "Download sampling folds CSV", records_csv(state["sampling_folds"]),
+                file_name=f"{spec.key}-sampling-folds.csv", mime="text/csv",
+                key=f"workspace-sampling-folds:{spec.key}",
+            )
+            if not state["sampling_summary"]["source_identity_stable"]:
+                st.caption("Stable source row IDs are unavailable; the CSV leaves observed unique-source coverage blank.")
+        else:
+            st.caption("Rerun Step 1 to save sampling CSVs for this older workspace.")
 
 
 def _render_normalization_step(st: Any, state: dict[str, Any], spec: Any) -> None:
@@ -613,11 +690,13 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                     )
                     logged_progress[stage] = decile
 
+            deduplication_started = perf_counter()
             result = deduplicate_workspace_documents(
                 state["normalization"].documents,
                 config,
                 progress=update,
             )
+            deduplication_elapsed = perf_counter() - deduplication_started
             workspace_key = eda_dataset_spec(
                 spec,
                 ("text",),
@@ -636,20 +715,31 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                 result,
                 workspace_dir,
                 metadata={
+                    "run_id": run_id,
+                    "sampling_run_id": state.get("sampling_summary", {}).get("run_id"),
                     "dataset_key": spec.key,
                     "dataset_label": spec.label,
                     "dataset_location": str(spec.location),
+                    "dataset_id": spec.dataset_id,
                     "dataset_config": spec.dataset_config,
                     "dataset_split": spec.dataset_split,
                     "dataset_revision": spec.dataset_revision,
                     "dataset_shards": spec.dataset_shards,
                     "training_schema": state["training_schema"],
                     "language_field": state.get("language_field"),
+                    "text_fields": state["text_fields"],
+                    "source_fields": state["source_fields"],
+                    "label_field": state.get("label_field"),
+                    "seed": state["seed"],
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "sampling": state["sample_plan"].as_dict(),
                     "normalization": "NFC",
                     "deduplication_config": asdict(config),
+                    "deduplication_elapsed_seconds": round(deduplication_elapsed, 6),
                 },
+                normalization=state["normalization"],
+                sampling_summary=state.get("sampling_summary"),
+                sampling_folds=state.get("sampling_folds", ()),
             )
             state["deduplication"] = result
             state["dedup_config"] = config
@@ -687,7 +777,7 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
         metrics[5].metric("Retention", f"{result.retention_pct:.1f}%")
         if state.get("workspace_dir"):
             st.success(f"Shared workspace artifacts: {state['workspace_dir']}")
-        download_columns = st.columns(2)
+        download_columns = st.columns(3)
         download_columns[0].download_button(
             "Download clean workspace JSONL",
             workspace_documents_jsonl(result.documents),
@@ -702,13 +792,27 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
             mime="text/csv",
             key=f"workspace-audit-download:{spec.key}",
         )
+        summary_path = Path(state["workspace_dir"]) / "deduplication_summary.csv" if state.get("workspace_dir") else None
+        if summary_path and summary_path.is_file():
+            download_columns[2].download_button(
+                "Download deduplication summary CSV", summary_path.read_bytes(),
+                file_name=f"{spec.key}-deduplication-summary.csv", mime="text/csv",
+                key=f"workspace-dedup-summary:{spec.key}",
+            )
+            st.caption(
+                "Paper tables cover the entire workspace sample before Step 5 language selection. "
+                "Document percentages use Step 3 input documents as the denominator; paragraph counts are separate."
+            )
+        else:
+            st.caption("Rerun Step 3 to save a deduplication summary CSV for this older workspace.")
+        st.info("Deduplication complete. Continue to Step 5 for EDA; Step 4 is optional.")
 
 
 def _render_drive_upload(st: Any, state: dict[str, Any], spec: Any) -> None:
     with st.expander("Upload completed workspace to Google Drive"):
         st.caption(
             "Uploads the complete Step 3 run folder (clean JSONL, audit CSV, and "
-            "manifest) with resumable transfers. Authenticate with ADC/service "
+            "sampling and deduplication summaries, and manifest) with resumable transfers. Authenticate with ADC/service "
             "account credentials, or let each teammate sign in through a browser."
         )
         completed = bool(state.get("workspace_dir"))
@@ -893,8 +997,8 @@ def _render_clean_eda_step(
     )
     st.caption(
         "Fixed outputs: corpus profile, document size, text structure, recurring "
-        "phrases, residual duplicate audit, and WordCloud. EDA never runs on "
-        "the raw source."
+        "phrases, residual duplicate audit, and WordCloud. EDA uses Step 3 output; "
+        "Step 4 is optional."
     )
     if st.button(
         "Start Step 5 · Run preprocessed EDA",
