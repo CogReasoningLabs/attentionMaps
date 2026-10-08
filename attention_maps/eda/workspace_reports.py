@@ -122,3 +122,14 @@ def deduplication_summary(
             "Paragraph counts and affected-document counts must not be added to removed-document counts."
         ),
     }
+
+
+def normalization_summary(result: NormalizationResult) -> dict[str, Any]:
+    return {
+        "normalization": result.normalization,
+        "sampled_rows": result.sampled_rows,
+        "normalized_rows": result.normalized_rows,
+        "missing_text_rows": result.missing_text_rows,
+        "missing_text_pct_of_sample": _percentage(result.missing_text_rows, result.sampled_rows),
+        "scope": "workspace sample after source selection, before deduplication",
+    }

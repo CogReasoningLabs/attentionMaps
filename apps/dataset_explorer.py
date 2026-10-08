@@ -683,21 +683,6 @@ def run_app() -> None:
     sample_tab, metadata_tab, workspace_tab, overlap_tab, inference_tab = st.tabs(
         ["Source sample", "Metadata", "WORKSPACE", "Dataset overlap", "Inference"]
     )
-    with workspace_tab:
-        if inventory.get("rows") is not None:
-            render_workspace_tab(st=st, inventory=inventory, spec=spec)
-        else:
-            st.info("WORKSPACE needs a known row count. Select a complete split with row metadata or Parquet shards.")
-
-    with overlap_tab:
-        render_overlap_tab(
-            st=st,
-            specs=overlap_specs,
-            current_spec=spec,
-            inventory_for_spec=inventory_for_spec,
-            cached_sample=cached_sample,
-        )
-
     with sample_tab:
         render_sample_tab(
             st=st,
@@ -706,6 +691,18 @@ def run_app() -> None:
             cached_sample=cached_sample,
             cached_filtered_sample=cached_filtered_sample,
             cached_filter_values=cached_filter_values,
+        )
+
+    with workspace_tab:
+        render_workspace_tab(st=st, inventory=inventory, spec=spec, cached_filter_values=cached_filter_values)
+
+    with overlap_tab:
+        render_overlap_tab(
+            st=st,
+            specs=overlap_specs,
+            current_spec=spec,
+            inventory_for_spec=inventory_for_spec,
+            cached_sample=cached_sample,
         )
 
     with inference_tab:

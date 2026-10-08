@@ -36,6 +36,7 @@ from attention_maps.eda.workspace_reports import (
     records_csv,
     sampling_summary,
 )
+from attention_maps.eda.workspace_export import export_workspace_zip
 from attention_maps.explorer import dataset_size_bucket, format_bytes
 from attention_maps.explorer.language_status import LANGUAGE_FIELDS
 
@@ -46,11 +47,13 @@ from .common import (
     text_columns,
 )
 from .pruning import render_d2_pruning_step
+from .selection import render_workspace_selection
 
 LOGGER = pipeline_logger("workspace")
 
 
-def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> None:
+def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
+                         cached_filter_values: Any = None) -> None:
     st.markdown("### Dataset cleaning WORKSPACE")
     st.caption(
         "Run Steps 1–3, then continue to Step 5 for EDA. Step 4 (D2 pruning) is optional. "
@@ -85,12 +88,35 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         st.info("Explore Source sample and Metadata, then choose a dataset role here to start preprocessing.")
         return
     st.caption(roles[selected_role].description)
+    inventory, selection_signature = render_workspace_selection(
+        st, inventory, spec, configured_eda_output_root(), cached_filter_values,
+    )
+    if inventory is None:
+        if state.get("sampling_complete"):
+            state.clear()
+            state.update(training_schema=selected_schema, dataset_role=selected_role)
+            st.info("Source selection changed. Rerun Steps 1–3 after applying the filters.")
+        return
     candidates = text_columns(inventory["schema"])
     if not candidates or int(inventory["rows"]) <= 0:
         st.info("This dataset has no detectable text fields for the workspace.")
         return
 
     field_columns = st.columns([3, 2, 2])
+    # Imported column selections may remove a previously selected field.
+    for key, options, multiple in (
+        (f"workspace-text-v2:{spec.key}", candidates, True),
+        (f"workspace-source:{spec.key}", inventory["columns"], True),
+        (f"workspace-label:{spec.key}", ["None", *inventory["columns"]], False),
+        (f"workspace-language-field:{spec.key}", [None, *inventory["columns"]], False),
+    ):
+        if key in st.session_state:
+            old = st.session_state[key]
+            if multiple:
+                if any(value not in options for value in old):
+                    st.session_state[key] = [value for value in old if value in options]
+            elif old not in options:
+                del st.session_state[key]
     selected_text = field_columns[0].multiselect(
         "Workspace text fields",
         candidates,
@@ -135,6 +161,11 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         key=f"workspace-language-field:{spec.key}",
         help="Preserve language names or codes for selection in Step 5. Choose this before sampling.",
     )
+    input_signature = (selection_signature, tuple(selected_text), tuple(selected_source), selected_label, language_field)
+    if state.get("sampling_complete") and state.get("input_signature") != input_signature:
+        state.clear()
+        state.update(training_schema=selected_schema, dataset_role=selected_role)
+        st.info("Source selection or workspace fields changed. Rerun Steps 1–3 for this selection.")
     population = int(inventory["rows"])
     controls = st.columns(4)
     suggested = min(20.0, max(0.01, 500_000 / population))
@@ -230,6 +261,8 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         None if selected_label == "None" else selected_label,
         language_field,
     )
+    if state.get("sampling_complete"):
+        state["input_signature"] = input_signature
     _render_normalization_step(st, state, spec)
     _render_deduplication_step(st, state, spec)
     render_d2_pruning_step(
@@ -243,6 +276,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
             and ("language_field" not in state or state["language_field"] != language_field)
         ),
     )
+    _render_workspace_export(st, state, spec)
     _render_drive_upload(st, state, spec)
 
 
@@ -430,8 +464,11 @@ def _render_sampling_step(
                     "dataset_split": spec.dataset_split,
                     "dataset_revision": spec.dataset_revision,
                     "dataset_shards": spec.dataset_shards,
-                    "source_format": inventory.get("format"),
-                    "source_selection": {key: inventory.get(key) for key in ("filter_column", "filter_value", "row_filters")},
+                    "source_format": inventory.get("workspace_selection", {}).get("source_format", inventory.get("format")),
+                    "sampling_format": inventory.get("format"),
+                    "source_selection": inventory.get("workspace_selection") or {
+                        key: inventory.get(key) for key in ("filter_column", "filter_value", "row_filters")
+                    },
                     "training_schema": training_schema,
                     "dataset_role": dataset_role,
                     "text_fields": text_fields,
@@ -447,6 +484,11 @@ def _render_sampling_step(
                 summary, fold_reports,
                 configured_eda_output_root() / "workspace" / workspace_key / "sampling" / sampling_run_id,
             )
+            sampled_path = sampling_artifacts[0].parent / "sampled_rows.jsonl"
+            with sampled_path.open("w", encoding="utf-8") as output:
+                for record in unique.values():
+                    output.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            sampling_artifacts = (*sampling_artifacts, sampled_path)
             state.clear()
             state.update(
                 {
@@ -746,6 +788,7 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                     "seed": state["seed"],
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "sampling": state["sample_plan"].as_dict(),
+                    "source_selection": state.get("sampling_summary", {}).get("source_selection"),
                     "normalization": "NFC",
                     "deduplication_config": asdict(config),
                     "deduplication_elapsed_seconds": round(deduplication_elapsed, 6),
@@ -957,6 +1000,39 @@ def _render_drive_upload(st: Any, state: dict[str, Any], spec: Any) -> None:
             )
 
 
+def _render_workspace_export(st: Any, state: dict[str, Any], spec: Any) -> None:
+    st.markdown("#### Export workspace")
+    if not state.get("eda_profile"):
+        state.pop("export_path", None)
+        state.pop("export_signature", None)
+        st.caption("Complete Step 5 to download step CSVs, records, EDA plots and artifacts together.")
+        return
+    signature = (str(state["workspace_dir"]), str(state["eda_output"]),
+                 state.get("eda_completed_at"), str(state.get("d2_output")))
+    if state.get("export_signature") != signature:
+        state.pop("export_path", None)
+    st.caption(
+        "The ZIP includes step summaries, source filters, sampling folds and records, normalization and "
+        "deduplication results, the selected EDA language's plots and tables, and completed optional D2 artifacts."
+    )
+    if st.button("Prepare ZIP export", key=f"workspace-export-prepare:{spec.key}"):
+        try:
+            with st.spinner("Packaging workspace artifacts…"):
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                path = Path(state["workspace_dir"]) / "exports" / f"workspace-{timestamp}.zip"
+                state["export_path"] = export_workspace_zip(state, path)
+                state["export_signature"] = signature
+        except (OSError, ValueError, KeyError) as error:
+            state.pop("export_path", None)
+            st.error(f"Could not export this run: {error}")
+    if state.get("export_path"):
+        path = Path(state["export_path"])
+        if path.is_file():
+            with path.open("rb") as archive:
+                st.download_button("Download workspace ZIP", archive, file_name=path.name,
+                                   mime="application/zip", key=f"workspace-export-download:{spec.key}")
+
+
 def _render_clean_eda_step(
     st: Any, state: dict[str, Any], spec: Any, *, language_field_changed: bool = False,
 ) -> None:
@@ -1019,6 +1095,8 @@ def _render_clean_eda_step(
         disabled=not available,
         key=f"workspace-eda:{spec.key}",
     ):
+        state.pop("eda_profile", None)
+        state.pop("eda_output", None)
         progress = st.progress(5, text="Preparing clean workspace EDA…")
         status = st.status("Analyzing preprocessed data…", expanded=True)
         try:
@@ -1107,6 +1185,7 @@ def _render_clean_eda_step(
             state["eda_profile"] = profile
             state["eda_output"] = output_root / analysis_spec.key
             state["eda_selection"] = selection
+            state["eda_completed_at"] = datetime.now(timezone.utc).isoformat()
             progress.progress(100, text="Preprocessed EDA complete")
             status.update(
                 label="Preprocessed EDA complete", state="complete", expanded=False

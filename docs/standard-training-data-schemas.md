@@ -57,6 +57,13 @@ for this schema in the current implementation.
 This schema covers both traditional NLP tasks and domain-specific supervised
 fine-tuning. One record is one labelled example.
 
+The WORKSPACE **Dataset role** dropdown offers **Traditional NLP** and
+**Domain-specific supervised** as explicit categories alongside the general
+**Task-specific supervised** role. Both categories use this same instance schema.
+They select `traditional_nlp` and `domain_specific_finetuning`, respectively,
+when optional D2 pruning is enabled. Sampling and deduplication exports record
+the chosen `dataset_role` separately from the canonical `training_schema`.
+
 ```json
 {
   "id": "stable-example-id",

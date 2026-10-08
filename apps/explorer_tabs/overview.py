@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .selection import render_row_filter_controls
+
 from .common import VIEWER_PREFIX, default_columns, preview_records, render_full_record
 
 def render_details_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> None:
@@ -28,63 +30,15 @@ def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
         key=f"sample-columns:{spec.key}",
         help="Choose the fields to display. Row filters can use other columns.",
     )
-    row_filters = {}
-    missing_values = []
     with st.expander("Row filters"):
-        filter_columns = st.multiselect(
-            "Filter rows by", inventory["columns"], key=f"sample-filter-columns:{spec.key}",
-            disabled=inventory["format"] in {"text", "kaggle_text"},
-            help="Choose metadata columns, such as language. Plain text files have no metadata columns.",
+        row_filters, missing_values, max_scan_rows = render_row_filter_controls(
+            st, inventory, spec.key, cached_filter_values,
         )
-        st.caption(
-            "Select the values stored in your dataset; matching includes case. "
-            "A row must match every selected column and any allowed value within each column. "
-            "These filters apply to Source sample only."
-        )
-        max_scan_rows = st.number_input(
-            "Maximum rows to scan", min_value=1, max_value=10_000_000, value=100_000, step=1_000,
-            key=f"sample-filter-limit:{spec.key}", disabled=not filter_columns,
-            help="Available values and filtered samples use this prefix of the selected source. "
-                 "Increase the limit to find values farther into the dataset.",
-        )
-        discovered = {"counts": {}}
-        if filter_columns:
-            try:
-                with st.spinner("Finding available filter values…"):
-                    discovered = cached_filter_values(inventory, tuple(filter_columns), int(max_scan_rows))
-                st.caption(f"Available values observed in {discovered['rows_scanned']:,} source rows. "
-                           "Counts are per column, before applying these preview filters.")
-                if discovered["scan_limit_reached"]:
-                    st.caption("More values may exist beyond the scan limit. Increase Maximum rows to scan to look farther.")
-                if discovered["truncated_columns"]:
-                    st.caption("Showing the first 200 distinct values for: "
-                               + ", ".join(discovered["truncated_columns"]) + ". Other values can be entered below.")
-            except (OSError, ValueError, ImportError) as error:
-                st.warning(f"Could not list available values: {error}. You can enter exact values below.")
-        for column in filter_columns:
-            counts = discovered["counts"].get(column, {})
-            value_key = f"sample-filter-options:{spec.key}:{column}"
-            # Keep selections active if a smaller scan no longer observes them.
-            options = list(dict.fromkeys([*counts, *st.session_state.get(value_key, [])]))
-            selected_values = st.multiselect(
-                f"Available values for {column}", options, key=value_key,
-                format_func=lambda value, counts=counts: (
-                    f"{value} · {counts[value]:,} rows" if value in counts else f"{value} · not observed in this scan"
-                ),
-                help="Choose one or more values. Counts refer to scanned rows, not the full dataset.",
-            )
-            if not counts:
-                st.caption(f"No selectable text values found for {column} in this scan.")
-            raw_values = st.text_area(
-                f"Allowed values for {column}", key=f"sample-filter-values:{spec.key}:{column}",
-                placeholder="Optional: values not listed above, one per line", height=68,
-                help="Additional exact values to allow alongside your dropdown selections. Leave blank to use only selected values.",
-            )
-            values = list(dict.fromkeys([*selected_values, *(value for value in raw_values.splitlines() if value.strip())]))
-            if values:
-                row_filters[column] = values
-            else:
-                missing_values.append(column)
+        st.caption("To preprocess this selection, open WORKSPACE and choose Use Source sample filters and columns.")
+    st.session_state[f"source-sample-selection:{spec.key}"] = {
+        "columns": list(selected_columns), "row_filters": row_filters,
+        "missing_values": missing_values, "max_scan_rows": max_scan_rows,
+    }
     preview_limit = st.slider(
         "Table preview characters per field", 100, 2_000, 400, 100
     )

@@ -245,7 +245,7 @@ def persist_workspace_artifacts(
 ) -> tuple[Path, ...]:
     """Persist one auditable clean workspace run without touching source data."""
 
-    from .workspace_reports import deduplication_summary, records_csv
+    from .workspace_reports import deduplication_summary, normalization_summary, records_csv
 
     output_dir.mkdir(parents=True, exist_ok=False)
     clean_path = output_dir / "clean_sample.jsonl"
@@ -258,6 +258,12 @@ def persist_workspace_artifacts(
         deduplication_summary(result, metadata=metadata, normalization=normalization)
     ]))
     paths = [clean_path, audit_path, manifest_path, summary_path]
+    if normalization is not None:
+        normal_summary_path = output_dir / "normalization_summary.csv"
+        normal_summary_path.write_bytes(records_csv([normalization_summary(normalization)]))
+        normalized_path = output_dir / "normalized_sample.jsonl"
+        normalized_path.write_bytes(workspace_documents_jsonl(normalization.documents))
+        paths.extend((normal_summary_path, normalized_path))
     if sampling_summary is not None:
         sample_path = output_dir / "sampling_summary.csv"
         sample_path.write_bytes(records_csv([sampling_summary]))
