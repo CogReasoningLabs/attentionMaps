@@ -27,13 +27,15 @@ class WorkspaceDocument:
     text: str
     source: str = ""
     label: str = ""
+    languages: tuple[str, ...] = ()
 
-    def as_record(self) -> dict[str, str]:
+    def as_record(self) -> dict[str, Any]:
         return {
             "row_id": self.row_id,
             "text": self.text,
             "source": self.source,
             "label": self.label,
+            "languages": list(self.languages),
         }
 
 
@@ -81,6 +83,7 @@ def normalize_workspace_sample(
     source_columns: Sequence[str] = (),
     *,
     label_column: str | None = None,
+    language_column: str | None = None,
     progress: WorkspaceProgress | None = None,
 ) -> NormalizationResult:
     """Extract selected fields and create NFC-normalized workspace documents."""
@@ -115,6 +118,7 @@ def normalize_workspace_sample(
                     if label_column and record.get(label_column) is not None
                     else ""
                 ),
+                languages=_language_values(record.get(language_column)),
             )
         )
         if progress and (index + 1) % 250 == 0:
@@ -127,6 +131,15 @@ def normalize_workspace_sample(
         normalized_rows=len(documents),
         missing_text_rows=missing,
     )
+
+
+def _language_values(value: Any) -> tuple[str, ...]:
+    """Keep actual metadata labels, without inferring language from script."""
+
+    values = value if isinstance(value, (list, tuple)) else (value,)
+    return tuple(dict.fromkeys(
+        item for item in values if isinstance(item, str) and item.strip()
+    ))
 
 
 def deduplicate_workspace_documents(
@@ -181,6 +194,7 @@ def deduplicate_workspace_documents(
                 text=text,
                 source=document.source,
                 label=document.label,
+                languages=document.languages,
             )
         )
         if progress and index % 250 == 0:

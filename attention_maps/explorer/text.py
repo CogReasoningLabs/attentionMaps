@@ -354,6 +354,7 @@ def create_wordcloud(
     background_color: str = "white",
     colormap: str = "viridis",
     seed: int = 42,
+    prefer_horizontal: float = 0.9,
 ) -> Any:
     """Create a WordCloud image from already-tokenized word frequencies."""
 
@@ -368,6 +369,7 @@ def create_wordcloud(
         font_path=str(font_path) if font_path else None,
         random_state=seed,
         collocations=False,
+        prefer_horizontal=prefer_horizontal,
     )
     return cloud.generate_from_frequencies(frequencies)
 

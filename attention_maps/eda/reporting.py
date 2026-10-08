@@ -162,7 +162,7 @@ def plot_dataset_profile(profile: DatasetProfile, output_dir: Path) -> Path:
 
     import matplotlib.pyplot as plt
 
-    _configure_plotting(plt)
+    _configure_plotting(plt, [text for text, _ in (*profile.top_tokens[:20], *profile.top_sources[:15])])
     figure, axes = plt.subplots(2, 2, figsize=(14, 9))
     samples = profile.samples
     axes[0, 0].hist([sample.tokens for sample in samples], bins=40, color="#2a6f97")
@@ -207,7 +207,7 @@ def plot_document_size_distribution(profile: DatasetProfile, output_dir: Path) -
     figure, axes = plt.subplots(1, 2, figsize=(14, 5))
     series = (
         ([sample.characters for sample in profile.samples], "Characters"),
-        ([sample.tokens for sample in profile.samples], "Words / regex tokens"),
+        ([sample.tokens for sample in profile.samples], "Words / Unicode tokens"),
     )
     for axis, (values, label) in zip(axes, series):
         positive = np.asarray([value for value in values if value > 0], dtype=float)
@@ -241,7 +241,7 @@ def plot_segment_length_kde(profile: DatasetProfile, output_dir: Path) -> Path:
     _configure_plotting(plt)
     figure, axes = plt.subplots(1, 2, figsize=(14, 5))
     series = (
-        (profile.sentence_length_samples, "Sentence length", "Regex tokens"),
+        (profile.sentence_length_samples, "Sentence length", "Unicode tokens"),
         (profile.line_length_samples, "Line length", "Normalized characters"),
     )
     for axis, (values, title, xlabel) in zip(axes, series):
@@ -269,7 +269,7 @@ def plot_top_ngrams(profile: DatasetProfile, output_dir: Path) -> Path:
 
     import matplotlib.pyplot as plt
 
-    _configure_plotting(plt)
+    _configure_plotting(plt, [text for values in profile.top_ngrams.values() for text, _ in values[:20]])
     orders = sorted(profile.top_ngrams)
     figure, axes = plt.subplots(
         1, len(orders), figsize=(7 * len(orders), 8), squeeze=False
@@ -302,7 +302,7 @@ def plot_cooccurrence_network(profile: DatasetProfile, output_dir: Path) -> Path
 
     import matplotlib.pyplot as plt
 
-    _configure_plotting(plt)
+    _configure_plotting(plt, [text for edge in profile.cooccurrence_edges[:30] for text in edge[:2]])
     edges = profile.cooccurrence_edges[:30]
     figure, axis = plt.subplots(figsize=(14, max(7, len(edges) * 0.24)))
     if edges:
@@ -403,11 +403,7 @@ def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
         ENGLISH_WORDCLOUD_STOPWORDS,
         configured_nepali_stopwords,
     )
-    from attention_maps.explorer.text import (
-        create_wordcloud,
-        find_devanagari_font,
-        find_latin_font,
-    )
+    from attention_maps.eda.wordcloud import group_words_by_font, render_wordcloud
 
     frequencies = _eligible_wordcloud_frequencies(
         profile.top_tokens,
@@ -421,29 +417,24 @@ def plot_wordcloud(profile: DatasetProfile, output_dir: Path) -> Path:
             output_dir,
             "No eligible words remain after configs/eda/stopwords.txt filtering.",
         )
-    contains_devanagari = any(
-        "\u0900" <= character <= "\u097f"
-        for token in frequencies
-        for character in token
-    )
-    font_path = find_devanagari_font() if contains_devanagari else find_latin_font()
-    if contains_devanagari and font_path is None:
+    frequencies = dict(sorted(frequencies.items(), key=lambda item: item[1], reverse=True)[:100])
+    groups, unsupported = group_words_by_font(frequencies)
+    _write_json(output_dir / "wordcloud_fonts.json", {
+        "fonts": [{"path": str(path), "words": words} for path, words in groups],
+        "unsupported_words": unsupported,
+        "size_comparison": "within each font panel",
+    })
+    if not groups:
         return _plot_wordcloud_unavailable(
             output_dir,
-            "A Devanagari-capable font is required to render this WordCloud.",
+            "No installed font supports these words. Install a Noto font for the selected language.\n"
+            "Word frequencies are available in top_tokens.csv.",
         )
-    cloud = create_wordcloud(
-        frequencies,
-        font_path=font_path,
-        max_words=100,
-        width=1_400,
-        height=700,
-        background_color="white",
-        colormap="viridis",
-        seed=profile.summary.seed,
+    cloud = render_wordcloud(
+        groups, seed=profile.summary.seed, missing_words=len(unsupported),
     )
     path = output_dir / "wordcloud.png"
-    cloud.to_file(str(path))
+    cloud.save(path)
     return path
 
 
@@ -535,9 +526,22 @@ def plot_cross_dataset(profiles: Iterable[DatasetProfile], output_dir: Path) -> 
     return path
 
 
-def _configure_plotting(plt: Any) -> None:
+def _configure_plotting(plt: Any, labels: Iterable[str] = ()) -> None:
+    from matplotlib import font_manager
+    from attention_maps.eda.wordcloud import group_words_by_font
+
     plt.style.use("seaborn-v0_8-whitegrid")
-    font_family = _mixed_script_font()
+    font_family = ["DejaVu Sans"]
+    characters = {character: 1 for label in labels for character in label}
+    if characters:
+        groups, _ = group_words_by_font(characters)
+        registered = {font.fname for font in font_manager.fontManager.ttflist}
+        for path, _ in groups:
+            if str(path) not in registered:
+                font_manager.fontManager.addfont(str(path))
+            name = font_manager.FontProperties(fname=str(path)).get_name()
+            if name not in font_family:
+                font_family.append(name)
     plt.rcParams.update(
         {
             "figure.dpi": 120,
@@ -580,25 +584,6 @@ def _even_positions(values: list[str]) -> dict[str, float]:
     if len(values) <= 1:
         return {value: 0.5 for value in values}
     return {value: index / (len(values) - 1) for index, value in enumerate(values)}
-
-
-def _mixed_script_font() -> str:
-    """Choose one installed font containing both Latin and Devanagari glyphs."""
-
-    from matplotlib import font_manager, ft2font
-
-    for family in ("Nirmala UI", "FreeSerif", "Arial Unicode MS"):
-        try:
-            path = font_manager.findfont(
-                font_manager.FontProperties(family=family),
-                fallback_to_default=False,
-            )
-            characters = ft2font.FT2Font(path).get_charmap()
-        except (FileNotFoundError, RuntimeError, ValueError):
-            continue
-        if ord("A") in characters and ord("क") in characters:
-            return family
-    return "DejaVu Sans"
 
 
 def _runtime_metadata() -> dict[str, Any]:

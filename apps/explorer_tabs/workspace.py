@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +31,7 @@ from attention_maps.eda.workspace import (
     workspace_documents_jsonl,
 )
 from attention_maps.explorer import dataset_size_bucket, format_bytes
+from attention_maps.explorer.language_status import LANGUAGE_FIELDS
 
 from .common import (
     configured_eda_output_root,
@@ -106,6 +109,19 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         index=label_options.index(default_label),
         key=f"workspace-label:{spec.key}",
         help="Required for class-balanced supervised D2 pruning.",
+    )
+    language_candidates = [
+        column for name in LANGUAGE_FIELDS for column in inventory["columns"]
+        if column.casefold() == name
+    ]
+    language_options = [None, *inventory["columns"]]
+    language_field = st.selectbox(
+        "Workspace language field",
+        language_options,
+        index=language_options.index(language_candidates[0]) if language_candidates else 0,
+        format_func=lambda value: value or "No language column",
+        key=f"workspace-language-field:{spec.key}",
+        help="Preserve language names or codes for selection in Step 5. Choose this before sampling.",
     )
     population = int(inventory["rows"])
     controls = st.columns(4)
@@ -200,11 +216,18 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         tuple(selected_text),
         tuple(selected_source),
         None if selected_label == "None" else selected_label,
+        language_field,
     )
     _render_normalization_step(st, state, spec)
     _render_deduplication_step(st, state, spec)
     render_d2_pruning_step(st=st, state=state, spec=spec, selected_schema=selected_schema)
-    _render_clean_eda_step(st, state, spec)
+    _render_clean_eda_step(
+        st, state, spec,
+        language_field_changed=(
+            state.get("sampling_complete", False)
+            and ("language_field" not in state or state["language_field"] != language_field)
+        ),
+    )
     _render_drive_upload(st, state, spec)
 
 
@@ -244,6 +267,7 @@ def _render_sampling_step(
     text_fields: tuple[str, ...],
     source_fields: tuple[str, ...],
     label_field: str | None,
+    language_field: str | None = None,
 ) -> None:
     st.markdown("#### Step 1 · Sampling")
     completed = bool(state.get("sampling_complete"))
@@ -275,6 +299,7 @@ def _render_sampling_step(
                         *text_fields,
                         *source_fields,
                         *((label_field,) if label_field else ()),
+                        *((language_field,) if language_field else ()),
                     )
                 )
             )
@@ -366,6 +391,7 @@ def _render_sampling_step(
                     "text_fields": text_fields,
                     "source_fields": source_fields,
                     "label_field": label_field,
+                    "language_field": language_field,
                     "seed": seed,
                 }
             )
@@ -436,6 +462,7 @@ def _render_normalization_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                 state["text_fields"],
                 state["source_fields"],
                 label_column=state.get("label_field"),
+                language_column=state.get("language_field"),
                 progress=update,
             )
             for downstream_key in (
@@ -617,6 +644,7 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                     "dataset_revision": spec.dataset_revision,
                     "dataset_shards": spec.dataset_shards,
                     "training_schema": state["training_schema"],
+                    "language_field": state.get("language_field"),
                     "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "sampling": state["sample_plan"].as_dict(),
                     "normalization": "NFC",
@@ -812,14 +840,56 @@ def _render_drive_upload(st: Any, state: dict[str, Any], spec: Any) -> None:
             )
 
 
-def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
+def _render_clean_eda_step(
+    st: Any, state: dict[str, Any], spec: Any, *, language_field_changed: bool = False,
+) -> None:
     st.markdown("#### Step 5 · EDA on preprocessed dataset")
+    if language_field_changed:
+        state.pop("eda_profile", None)
+        state.pop("eda_output", None)
+        st.info("Language field changed or missing from this older workspace. Rerun Steps 1–3 to preserve language labels for EDA.")
+        return
     available = "deduplication" in state and bool(state["deduplication"].documents)
+    documents = state["deduplication"].documents if available else ()
+    total_documents = len(documents)
+    language_field = state.get("language_field")
+    selected_language = None
+    if available and language_field:
+        counts = Counter(language for document in documents for language in document.languages)
+        selected_language = st.selectbox(
+            "EDA language",
+            sorted(counts, key=str.casefold),
+            index=None,
+            placeholder="Select a language to analyze",
+            format_func=lambda value: f"{value} · {counts[value]:,} cleaned rows",
+            key=f"workspace-eda-language:{spec.key}:{language_field}",
+        )
+        documents = tuple(document for document in documents if selected_language in document.languages)
+        available = bool(documents)
+        missing = sum(not document.languages for document in state["deduplication"].documents)
+        st.caption(
+            f"Language column: {language_field} · {len(documents):,} of {total_documents:,} cleaned rows selected · "
+            f"{missing:,} rows without a language label excluded. "
+            "Options come from this preprocessed sample; all Step 5 plots use the selected rows."
+        )
+        if not counts:
+            st.info("No language values remain in this sample. Choose the correct language field and rerun Steps 1–3, or increase the sample size.")
+    elif available:
+        st.warning("This workspace has no language metadata. Select a Workspace language field and rerun Steps 1–3 to filter by language.")
+        available = st.checkbox(
+            "Analyze all cleaned rows without a language filter",
+            value=False,
+            key=f"workspace-eda-unfiltered:{spec.key}",
+        )
+    selection = (language_field, selected_language, available)
+    if state.get("eda_selection") != selection:
+        state.pop("eda_profile", None)
+        state.pop("eda_output", None)
     completed = "eda_profile" in state
     st.write(
         "✅ Complete"
         if completed
-        else "🔒 Complete Step 3 first" if not available else "⏳ Ready"
+        else "⏳ Ready" if available else "Select a language or complete Step 3 first"
     )
     st.caption(
         "Fixed outputs: corpus profile, document size, text structure, recurring "
@@ -835,7 +905,6 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
         progress = st.progress(5, text="Preparing clean workspace EDA…")
         status = st.status("Analyzing preprocessed data…", expanded=True)
         try:
-            documents = state["deduplication"].documents
             base_spec = eda_dataset_spec(
                 spec,
                 ("text",),
@@ -843,7 +912,11 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
                 len(documents),
                 len(documents),
             )
-            analysis_spec = replace(base_spec, key=f"{base_spec.key}-clean-workspace")
+            scope_id = (
+                "language-" + hashlib.sha256(json.dumps(selection[:2]).encode()).hexdigest()[:12]
+                if selected_language is not None else "all-rows"
+            )
+            analysis_spec = replace(base_spec, key=f"{base_spec.key}-clean-workspace-{scope_id}")
             config = AnalysisConfig(
                 sample_size=len(documents),
                 seed=int(state["seed"]),
@@ -885,9 +958,9 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
                 progress=update,
             )
             progress.progress(85, text="Writing clean-data figures and tables…")
-            output_root = Path(state["workspace_dir"]) / "eda"
+            output_root = Path(state["workspace_dir"]) / "eda" / scope_id
             run = SurveyRun(
-                SurveyPlan("Clean workspace EDA", (analysis_spec,), config),
+                SurveyPlan(f"Clean workspace EDA · {selected_language or 'all rows'}", (analysis_spec,), config),
                 (profile,),
                 {},
             )
@@ -904,8 +977,19 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
                     "wordcloud",
                 ),
             )
+            (output_root / "language_selection.json").write_text(
+                json.dumps({
+                    "column": language_field,
+                    "value": selected_language,
+                    "selected_cleaned_rows": len(documents),
+                    "total_cleaned_rows": total_documents,
+                    "scope": "preprocessed workspace sample",
+                }, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
             state["eda_profile"] = profile
             state["eda_output"] = output_root / analysis_spec.key
+            state["eda_selection"] = selection
             progress.progress(100, text="Preprocessed EDA complete")
             status.update(
                 label="Preprocessed EDA complete", state="complete", expanded=False
@@ -927,7 +1011,10 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
         metrics = st.columns(5)
         metrics[0].metric("Clean rows", f"{summary.usable_rows:,}")
         metrics[1].metric("Median words", f"{summary.median_tokens:.1f}")
-        metrics[2].metric("Quality pass", f"{summary.quality_pass_ratio_pct:.1f}%")
+        metrics[2].metric(
+            "Nepali quality pass", f"{summary.quality_pass_ratio_pct:.1f}%",
+            help="Uses the Nepali quality gate (minimum length and Devanagari ratio), even when viewing another language.",
+        )
         metrics[3].metric("Script", summary.script_category)
         metrics[4].metric("Residual duplicates", f"{summary.duplicate_ratio_pct:.1f}%")
         st.markdown("##### Defined EDA visualizations")
@@ -965,5 +1052,5 @@ def _render_clean_eda_step(st: Any, state: dict[str, Any], spec: Any) -> None:
             )
         else:
             wordcloud_column.info(
-                "Rerun Step 4 once to generate the new WordCloud for this older run."
+                "Rerun Step 5 to generate the WordCloud for this older run."
             )

@@ -9,9 +9,6 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 
-TOKEN_PATTERN = re.compile(
-    r"[\u0900-\u0963\u0971-\u097F]+|[A-Za-z]+(?:['’][A-Za-z]+)?|\d+(?:[.,]\d+)*"
-)
 SENTENCE_BOUNDARY = re.compile(r"[।॥!?]+|(?<!\d)\.(?!\d)|\n+")
 NON_DEVANAGARI_PATTERN = re.compile(r"[^\u0900-\u097F\s]")
 NEPALI_SUFFIXES = (
@@ -71,8 +68,36 @@ def normalize_structured_text(text: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
+    """Keep Unicode letters and attached marks, plus numeric tokens.
+
+    These are script-neutral token estimates, not language-specific segmentation
+    (a continuous Chinese/Thai run, for example, stays one token).
+    """
+
     normalized = unicodedata.normalize("NFC", text).replace("\ufeff", " ")
-    return [token.casefold() for token in TOKEN_PATTERN.findall(normalized)]
+    tokens: list[str] = []
+    buffer: list[str] = []
+    kind = ""
+    for index, character in enumerate(normalized):
+        category = unicodedata.category(character)[0]
+        following = normalized[index + 1:index + 2]
+        current = category if category in {"L", "N"} else ""
+        if buffer and (
+            (kind == "L" and (category == "M" or character in "\u200c\u200d"))
+            or (kind == "L" and character in "'’" and following.isalpha())
+            or (kind == "N" and character in ".," and following.isdecimal())
+        ):
+            buffer.append(character)
+            continue
+        if buffer and current != kind:
+            tokens.append("".join(buffer).casefold())
+            buffer = []
+        if current:
+            buffer.append(character)
+        kind = current
+    if buffer:
+        tokens.append("".join(buffer).casefold())
+    return tokens
 
 
 def clean_devanagari_text(text: str) -> str:
