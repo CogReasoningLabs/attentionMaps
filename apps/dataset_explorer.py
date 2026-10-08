@@ -330,12 +330,17 @@ def run_app() -> None:
     source_type = st.sidebar.selectbox(
         "Data source",
         SOURCE_TYPES,
-        index=SOURCE_TYPES.index("Local"),
+        index=None,
+        placeholder="Choose a data source",
+        key="dataset-source-type",
         help=(
             "Remote sources are registered by their standard identifier. Provider "
             "credentials are read from .env and are never stored in UI state."
         ),
     )
+    if source_type is None:
+        st.info("Choose a data source in the sidebar, then load a dataset to begin.")
+        st.stop()
     if source_type == "Local":
         source_settings = st.sidebar.expander("Local source settings")
         data_root_text = source_settings.text_input("Data root", str(DEFAULT_DATA_ROOT))
@@ -385,7 +390,7 @@ def run_app() -> None:
             ),
         )
         if source_area == SYNTHETIC_DATA_AREA:
-            spec = render_synthetic_dataset_card(st, key="explorer-synthetic")
+            spec = render_synthetic_dataset_card(st, key="explorer-synthetic", select_default=False)
         else:
             if not pipeline_specs and not external_specs:
                 st.warning(f"No supported datasets found under `{data_root}`.")
@@ -400,8 +405,6 @@ def run_app() -> None:
                     "are stage-independent."
                 ),
             )
-            # Prefer an available local stage by default; remote datasets can
-            # otherwise trigger a network request as soon as the app starts.
             all_specs = catalog_specs
             provider_options = list(
                 dict.fromkeys(
@@ -453,8 +456,21 @@ def run_app() -> None:
             spec = st.sidebar.selectbox(
                 "Dataset / split",
                 dataset_specs,
+                index=None,
+                placeholder="Choose a dataset or split",
                 format_func=lambda item: f"{item.label} · {item.purpose_label}",
             )
+
+    if source_type == "Local":
+        selection = (
+            spec.key, str(spec.location), tuple(str(path) for path in spec.files), spec.visible_columns,
+        ) if spec is not None else None
+        if st.sidebar.button("Load selected dataset", type="primary", disabled=spec is None,
+                             key="load-local-dataset"):
+            st.session_state["loaded-local-dataset"] = selection
+        if spec is not None and st.session_state.get("loaded-local-dataset") != selection:
+            st.info("Click Load selected dataset to inspect this source and preview its records.")
+            st.stop()
 
     if spec is None:
         st.info("Select a valid dataset to begin.")

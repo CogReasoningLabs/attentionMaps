@@ -69,7 +69,8 @@ def export_workspace_zip(state, destination):
          "scope": "deduplicated workspace", "details": "Optional branch; Step 5 uses Step 3 output."},
         {"step": 5, "name": "EDA", "status": "complete",
          "input_rows": profile.summary.rows_seen, "output_rows": profile.summary.usable_rows,
-         "scope": "selected language within Step 3 output",
+         "scope": ("selected language within Step 3 output" if state["eda_selection"][0]
+                   else "all cleaned rows from the workspace selection"),
          "details": "See eda/language_selection.json and eda/survey_summary.csv."},
     ]
     extra = {

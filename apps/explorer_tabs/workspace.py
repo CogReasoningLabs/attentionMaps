@@ -38,6 +38,7 @@ from attention_maps.eda.workspace_reports import (
 )
 from attention_maps.eda.workspace_export import export_workspace_zip
 from attention_maps.explorer import dataset_size_bucket, format_bytes
+from attention_maps.explorer.catalog import TEXT_FIELD_NAMES
 from attention_maps.explorer.language_status import LANGUAGE_FIELDS
 
 from .common import (
@@ -108,7 +109,6 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
         (f"workspace-text-v2:{spec.key}", candidates, True),
         (f"workspace-source:{spec.key}", inventory["columns"], True),
         (f"workspace-label:{spec.key}", ["None", *inventory["columns"]], False),
-        (f"workspace-language-field:{spec.key}", [None, *inventory["columns"]], False),
     ):
         if key in st.session_state:
             old = st.session_state[key]
@@ -148,18 +148,8 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
         key=f"workspace-label:{spec.key}",
         help="Required for class-balanced supervised D2 pruning.",
     )
-    language_candidates = [
-        column for name in LANGUAGE_FIELDS for column in inventory["columns"]
-        if column.casefold() == name
-    ]
-    language_options = [None, *inventory["columns"]]
-    language_field = st.selectbox(
-        "Workspace language field",
-        language_options,
-        index=language_options.index(language_candidates[0]) if language_candidates else 0,
-        format_func=lambda value: value or "No language column",
-        key=f"workspace-language-field:{spec.key}",
-        help="Preserve language names or codes for selection in Step 5. Choose this before sampling.",
+    language_field, filter_eda_language = _render_optional_language_filter(
+        st, inventory, spec, selected_text,
     )
     input_signature = (selection_signature, tuple(selected_text), tuple(selected_source), selected_label, language_field)
     if state.get("sampling_complete") and state.get("input_signature") != input_signature:
@@ -174,7 +164,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
         min_value=0.01,
         max_value=100.0,
         value=float(round(suggested, 4)),
-        step=0.1,
+        step=0.0001,
         format="%.4f",
         key=f"workspace-percentage:{spec.key}",
     )
@@ -271,6 +261,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
     )
     _render_clean_eda_step(
         st, state, spec,
+        filter_by_language=filter_eda_language,
         language_field_changed=(
             state.get("sampling_complete", False)
             and ("language_field" not in state or state["language_field"] != language_field)
@@ -278,6 +269,35 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
     )
     _render_workspace_export(st, state, spec)
     _render_drive_upload(st, state, spec)
+
+
+def _render_optional_language_filter(st, inventory, spec, text_fields):
+    """Keep language metadata when available; a second row filter is opt-in."""
+    excluded = {name.casefold() for name in (*TEXT_FIELD_NAMES, *text_fields)}
+    metadata_columns = [column for column in inventory["columns"] if column.casefold() not in excluded]
+    candidates = [column for name in LANGUAGE_FIELDS for column in metadata_columns if column.casefold() == name]
+    language_field = candidates[0] if candidates else None
+    with st.expander("Optional language filter for EDA"):
+        st.caption(
+            "EDA uses all cleaned rows from your selected configuration, split, shards and row filters. "
+            "Enable this only to narrow that selection further by a language metadata column."
+        )
+        enabled = st.checkbox(
+            "Filter EDA by language as well", value=False,
+            key=f"workspace-extra-language-filter:{spec.key}", disabled=not metadata_columns,
+        ) and bool(metadata_columns)
+        if enabled:
+            options = [None, *metadata_columns]
+            key = f"workspace-language-field:{spec.key}"
+            if st.session_state.get(key) not in options:
+                del st.session_state[key]
+            language_field = st.selectbox(
+                "Language metadata column", options,
+                index=options.index(language_field), key=key,
+                format_func=lambda value: value or "Select a language metadata column",
+                help="Choose a column containing language names or codes. Changing this column requires rerunning Steps 1–3.",
+            )
+    return language_field, enabled
 
 
 def _render_shared_runs(st: Any, dataset_workspace: Path) -> None:
@@ -1013,7 +1033,7 @@ def _render_workspace_export(st: Any, state: dict[str, Any], spec: Any) -> None:
         state.pop("export_path", None)
     st.caption(
         "The ZIP includes step summaries, source filters, sampling folds and records, normalization and "
-        "deduplication results, the selected EDA language's plots and tables, and completed optional D2 artifacts."
+        "deduplication results, the current EDA selection's plots and tables, and completed optional D2 artifacts."
     )
     if st.button("Prepare ZIP export", key=f"workspace-export-prepare:{spec.key}"):
         try:
@@ -1035,6 +1055,7 @@ def _render_workspace_export(st: Any, state: dict[str, Any], spec: Any) -> None:
 
 def _render_clean_eda_step(
     st: Any, state: dict[str, Any], spec: Any, *, language_field_changed: bool = False,
+    filter_by_language: bool = False,
 ) -> None:
     st.markdown("#### Step 5 · EDA on preprocessed dataset")
     if language_field_changed:
@@ -1045,7 +1066,7 @@ def _render_clean_eda_step(
     available = "deduplication" in state and bool(state["deduplication"].documents)
     documents = state["deduplication"].documents if available else ()
     total_documents = len(documents)
-    language_field = state.get("language_field")
+    language_field = state.get("language_field") if filter_by_language else None
     selected_language = None
     if available and language_field:
         counts = Counter(language for document in documents for language in document.languages)
@@ -1068,12 +1089,14 @@ def _render_clean_eda_step(
         if not counts:
             st.info("No language values remain in this sample. Choose the correct language field and rerun Steps 1–3, or increase the sample size.")
     elif available:
-        st.warning("This workspace has no language metadata. Select a Workspace language field and rerun Steps 1–3 to filter by language.")
-        available = st.checkbox(
-            "Analyze all cleaned rows without a language filter",
-            value=False,
-            key=f"workspace-eda-unfiltered:{spec.key}",
-        )
+        if filter_by_language:
+            st.info("Choose a Language metadata column in Optional language filter for EDA and rerun Steps 1–3.")
+            available = False
+        else:
+            st.caption(
+                f"EDA uses all {total_documents:,} cleaned rows from your workspace selection. "
+                "Your source split and row filters have already been applied."
+            )
     selection = (language_field, selected_language, available)
     if state.get("eda_selection") != selection:
         state.pop("eda_profile", None)
@@ -1082,7 +1105,9 @@ def _render_clean_eda_step(
     st.write(
         "✅ Complete"
         if completed
-        else "⏳ Ready" if available else "Select a language or complete Step 3 first"
+        else "⏳ Ready" if available
+        else "Select a language or complete Step 3 first" if filter_by_language
+        else "Complete Step 3 first"
     )
     st.caption(
         "Fixed outputs: corpus profile, document size, text structure, recurring "
@@ -1155,7 +1180,7 @@ def _render_clean_eda_step(
             progress.progress(85, text="Writing clean-data figures and tables…")
             output_root = Path(state["workspace_dir"]) / "eda" / scope_id
             run = SurveyRun(
-                SurveyPlan(f"Clean workspace EDA · {selected_language or 'all rows'}", (analysis_spec,), config),
+                SurveyPlan(f"Clean workspace EDA · {selected_language or 'workspace selection'}", (analysis_spec,), config),
                 (profile,),
                 {},
             )
@@ -1179,6 +1204,8 @@ def _render_clean_eda_step(
                     "selected_cleaned_rows": len(documents),
                     "total_cleaned_rows": total_documents,
                     "scope": "preprocessed workspace sample",
+                    "mode": "additional_language_filter" if filter_by_language else "workspace_selection",
+                    "source_selection": state.get("sampling_summary", {}).get("source_selection"),
                 }, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )

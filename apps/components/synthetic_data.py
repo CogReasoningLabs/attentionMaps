@@ -16,6 +16,7 @@ def render_synthetic_dataset_card(
     st: Any,
     *,
     key: str,
+    select_default: bool = True,
 ) -> DatasetSpec | None:
     """Select a registered synthetic family and one materialized variant."""
 
@@ -30,9 +31,13 @@ def render_synthetic_dataset_card(
     family = card.selectbox(
         "Synthetic dataset family",
         families,
+        index=0 if select_default else None,
+        placeholder="Choose a synthetic dataset family",
         format_func=lambda item: item.label,
         key=f"{key}:family",
     )
+    if family is None:
+        return None
     card.write(family.description)
     stages = card.columns(3)
     stages[0].metric("Input", family.input_label)
@@ -54,6 +59,8 @@ def render_synthetic_dataset_card(
     return card.selectbox(
         "Dataset variant",
         family.variants,
+        index=0 if select_default else None,
+        placeholder="Choose a dataset variant",
         format_func=lambda spec: spec.label,
         key=f"{key}:variant",
         help=(
