@@ -8,6 +8,8 @@ from .kaggle import (
     sample_kaggle_workbook_rows,
 )
 from .schemas import (
+    DATASET_ROLES,
+    DatasetRole,
     D2_SUPPORTED_USE_CASES,
     EVALUATION_SCHEMA,
     STANDARD_DATASET_SCHEMAS,
@@ -21,6 +23,8 @@ from .schemas import (
 )
 
 __all__ = [
+    "DATASET_ROLES",
+    "DatasetRole",
     "D2_SUPPORTED_USE_CASES",
     "EVALUATION_SCHEMA",
     "STANDARD_DATASET_SCHEMAS",

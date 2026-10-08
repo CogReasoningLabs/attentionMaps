@@ -28,7 +28,10 @@ EMBEDDINGS_MODEL = "Generate XLM-R embeddings"
 EMBEDDINGS_UPLOAD = "Upload precomputed embeddings (.npz)"
 
 
-def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any, selected_schema: str) -> None:
+def render_d2_pruning_step(
+    *, st: Any, state: dict[str, Any], spec: Any, selected_schema: str,
+    role_use_case: str | None = None,
+) -> None:
     st.markdown("#### Step 4 · D2 supervised data pruning (optional)")
     st.caption(
         "You can continue directly from Step 3 to Step 5. EDA uses the full "
@@ -36,7 +39,7 @@ def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any, selecte
     )
     if selected_schema != TASK_SPECIFIC_SUPERVISED_SCHEMA:
         st.info(
-            "Optional D2 applies to the Task-specific supervised dataset role. "
+            "Optional D2 applies to Task-specific supervised, Traditional NLP, and Domain-specific supervised roles. "
             "Continue to Step 5 for EDA with this role."
         )
         return
@@ -57,13 +60,17 @@ def render_d2_pruning_step(*, st: Any, state: dict[str, Any], spec: Any, selecte
         help="D2 must never use validation or test examples.",
     )
 
-    use_case = st.radio(
-        "Approved D2 use case",
-        tuple(USE_CASE_LABELS),
-        format_func=USE_CASE_LABELS.get,
-        horizontal=True,
-        key=f"d2-use-case:{spec.key}",
-    )
+    if role_use_case is not None:
+        use_case = role_use_case
+        st.caption(f"D2 use case: {USE_CASE_LABELS[use_case]} (from Dataset role)")
+    else:
+        use_case = st.radio(
+            "Approved D2 use case",
+            tuple(USE_CASE_LABELS),
+            format_func=USE_CASE_LABELS.get,
+            horizontal=True,
+            key=f"d2-use-case:{spec.key}",
+        )
     deduplication = state.get("deduplication")
     documents = tuple(deduplication.documents) if deduplication else ()
     available = len(documents) >= 2

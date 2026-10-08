@@ -18,7 +18,7 @@ from attention_maps.common.google_drive import (
     upload_path_to_google_drive,
 )
 from attention_maps.common.pipeline_logging import pipeline_logger
-from attention_maps.datasets.schemas import STANDARD_DATASET_SCHEMAS, infer_training_schema
+from attention_maps.datasets.schemas import DATASET_ROLES, infer_training_schema
 from attention_maps.eda.contracts import AnalysisConfig, SurveyPlan, SurveyRun
 from attention_maps.eda.deduplication import DeduplicationConfig
 from attention_maps.eda.pipeline import analyze_records
@@ -56,29 +56,35 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
         "Run Steps 1–3, then continue to Step 5 for EDA. Step 4 (D2 pruning) is optional. "
         "The workspace creates a sampled, NFC-normalized, deduplicated copy of the source."
     )
-    schemas = {schema.key: schema for schema in STANDARD_DATASET_SCHEMAS}
-    inferred = next((tag for tag in spec.tags if tag in schemas), None)
+    roles = {role.key: role for role in DATASET_ROLES}
+    inferred = next((tag for tag in spec.tags if tag in roles and roles[tag].d2_use_case), None)
+    if inferred is None:
+        inferred = next((tag for tag in spec.tags if tag in roles), None)
+    if inferred is None:
+        inferred = next((role.key for role in DATASET_ROLES if role.label == spec.primary_purpose), None)
     if inferred is None:
         inferred = ("evaluation" if spec.primary_purpose == "Evaluation / benchmark"
                     else infer_training_schema(spec.primary_purpose))
-    schema_keys = [None, *schemas]
-    selected_schema = st.selectbox(
+    role_keys = [None, *roles]
+    selected_role = st.selectbox(
         "Dataset role",
-        schema_keys,
-        index=schema_keys.index(inferred) if inferred in schema_keys else 0,
-        format_func=lambda key: schemas[key].label if key else "Not classified yet",
+        role_keys,
+        index=role_keys.index(inferred) if inferred in role_keys else 0,
+        format_func=lambda key: roles[key].label if key else "Not classified yet",
         key=f"workspace-schema:{spec.key}",
         help="Inspect Source sample and Metadata first, then choose the intended role for this workspace.",
     )
     state_key = f"cleaning-workspace:{spec.key}"
     state = st.session_state.setdefault(state_key, {})
-    if state.get("training_schema") != selected_schema:
+    selected_schema = roles[selected_role].training_schema if selected_role else None
+    if state.get("dataset_role", state.get("training_schema")) != selected_role:
         state.clear()
         state["training_schema"] = selected_schema
+    state["dataset_role"] = selected_role
     if selected_schema is None:
         st.info("Explore Source sample and Metadata, then choose a dataset role here to start preprocessing.")
         return
-    st.caption(schemas[selected_schema].description)
+    st.caption(roles[selected_role].description)
     candidates = text_columns(inventory["schema"])
     if not candidates or int(inventory["rows"]) <= 0:
         st.info("This dataset has no detectable text fields for the workspace.")
@@ -201,7 +207,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
 
     if st.button("Reset this dataset workspace", key=f"workspace-reset:{spec.key}"):
         LOGGER.info("WORKSPACE RESET dataset=%s", spec.key)
-        st.session_state[state_key] = {"training_schema": selected_schema}
+        st.session_state[state_key] = {"training_schema": selected_schema, "dataset_role": selected_role}
         state = st.session_state[state_key]
 
     shared_key = eda_dataset_spec(
@@ -226,7 +232,10 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> No
     )
     _render_normalization_step(st, state, spec)
     _render_deduplication_step(st, state, spec)
-    render_d2_pruning_step(st=st, state=state, spec=spec, selected_schema=selected_schema)
+    render_d2_pruning_step(
+        st=st, state=state, spec=spec, selected_schema=selected_schema,
+        role_use_case=roles[selected_role].d2_use_case,
+    )
     _render_clean_eda_step(
         st, state, spec,
         language_field_changed=(
@@ -406,6 +415,7 @@ def _render_sampling_step(
                     len(unique),
                 )
             training_schema = state["training_schema"]
+            dataset_role = state.get("dataset_role", training_schema)
             summary = sampling_summary(
                 sampling,
                 fold_reports,
@@ -423,6 +433,7 @@ def _render_sampling_step(
                     "source_format": inventory.get("format"),
                     "source_selection": {key: inventory.get(key) for key in ("filter_column", "filter_value", "row_filters")},
                     "training_schema": training_schema,
+                    "dataset_role": dataset_role,
                     "text_fields": text_fields,
                     "source_fields": source_fields,
                     "label_field": label_field,
@@ -440,6 +451,7 @@ def _render_sampling_step(
             state.update(
                 {
                     "training_schema": training_schema,
+                    "dataset_role": dataset_role,
                     "sample_records": tuple(unique.values()),
                     "sampling_complete": True,
                     "sample_unique_rows": len(unique),
@@ -726,6 +738,7 @@ def _render_deduplication_step(st: Any, state: dict[str, Any], spec: Any) -> Non
                     "dataset_revision": spec.dataset_revision,
                     "dataset_shards": spec.dataset_shards,
                     "training_schema": state["training_schema"],
+                    "dataset_role": state.get("dataset_role", state["training_schema"]),
                     "language_field": state.get("language_field"),
                     "text_fields": state["text_fields"],
                     "source_fields": state["source_fields"],

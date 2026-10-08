@@ -64,6 +64,39 @@ D2_SUPPORTED_USE_CASES = (
 )
 
 
+@dataclass(frozen=True)
+class DatasetRole:
+    key: str
+    label: str
+    training_schema: str
+    description: str
+    d2_use_case: str | None = None
+
+
+# Roles describe the dataset's purpose; both supervised subcategories share
+# the existing text/label/task instance contract.
+_SUPERVISED_ROLES = (
+    DatasetRole(
+        "traditional_nlp", "Traditional NLP", TASK_SPECIFIC_SUPERVISED_SCHEMA,
+        "Labelled examples for NLP tasks such as sentiment analysis, classification, or named-entity recognition.",
+        "traditional_nlp",
+    ),
+    DatasetRole(
+        "domain_specific_supervised", "Domain-specific supervised", TASK_SPECIFIC_SUPERVISED_SCHEMA,
+        "Labelled examples for supervised fine-tuning in a specific domain, such as medicine, law, or finance.",
+        "domain_specific_finetuning",
+    ),
+)
+DATASET_ROLES = tuple(
+    role
+    for schema in STANDARD_DATASET_SCHEMAS
+    for role in (
+        DatasetRole(schema.key, schema.label, schema.key, schema.description),
+        *(_SUPERVISED_ROLES if schema.key == TASK_SPECIFIC_SUPERVISED_SCHEMA else ()),
+    )
+)
+
+
 def infer_training_schema(primary_purpose: str) -> str | None:
     """Map the curated catalog purpose to one of the four standard schemas."""
 
