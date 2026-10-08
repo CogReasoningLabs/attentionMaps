@@ -2,9 +2,14 @@
 # Run: venv/bin/python scripts/cluster_dataset.py run --settings configs/embeddings.yaml
 # Paths are relative to this file. Explicit CLI arguments override these values.
 
+# Optional named source. Choose an ID from datasets/sources.yaml, or pass --source-id.
+# A selected ID replaces all inline source and schema fields below; model settings stay shared.
+source_registry: datasets/sources.yaml
+source_id: null
+
 # 1. Choose the DATASOURCE provider first (independent of the embedding model).
 # Remote sources require an explicit provider; they are never guessed.
-provider: huggingface                # huggingface | kaggle
+provider: huggingface                # huggingface | kaggle | local
 
 # Kaggle uses dataset + dataset_file.
 # Hugging Face uses dataset + revision/config/split/shards; set dataset_file: null.

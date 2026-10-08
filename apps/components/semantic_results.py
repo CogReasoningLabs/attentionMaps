@@ -9,6 +9,7 @@ from attention_maps.explorer.semantic_artifacts import load_run, open_records, p
 from apps.components.semantic_instance import render_instance
 from apps.components.semantic_wordclouds import render_cluster_wordcloud
 from attention_maps.explorer.semantic_variants import discover_clusterings, load_clustering
+from apps.components.semantic_sources import select_source_runs
 
 
 def discover_runs(directory):
@@ -46,12 +47,11 @@ def plot_records(root, report, *, limit=10000, clustering_root=None):
 def render_semantic_results(st, default_root="artifacts/dataset_embeddings"):
     st.header("Dataset embeddings and clusters")
     directory = st.text_input("Embedding runs directory", value=default_root)
+    st.button("Refresh saved runs")
     found = discover_runs(directory)
-    if not found:
-        st.info("No completed embedding runs found. Run scripts/cluster_dataset.py run first, then select its output directory here.")
+    choices = select_source_runs(st, found, directory, dataset_label)
+    if not choices:
         return
-    dataset = st.selectbox("Dataset", sorted({dataset_label(report) for _, report in found}))
-    choices = [(path, report) for path, report in found if dataset_label(report) == dataset]
     model = st.selectbox("Embedding model", sorted({report["model"]["id"] for _, report in choices}))
     choices = [(path, report) for path, report in choices if report["model"]["id"] == model]
     path = st.selectbox("Saved embedding run", [path for path, _ in choices], format_func=lambda path: path.name)

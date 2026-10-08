@@ -17,6 +17,7 @@ from attention_maps.explorer.semantic_artifacts import build_run, load_run, pair
 from attention_maps.explorer.semantic_sampling import curate_run
 from attention_maps.explorer.semantic_source import source_settings, resolve_source
 from attention_maps.explorer.semantic_settings import load_embedding_settings, apply_cli_overrides, effective_run_settings
+from attention_maps.explorer.source_registry import DEFAULT_SOURCE_REGISTRY, load_source_registry, registered_defaults
 
 
 def positive(value):
@@ -37,13 +38,17 @@ def parser(run_defaults=None):
     cli = argparse.ArgumentParser(description=__doc__)
     commands = cli.add_subparsers(dest="command", required=True)
     commands.add_parser("models", help="List model presets without loading models")
-    run = commands.add_parser("run", help="Embed the whole selected source and cluster every non-empty record")
+    sources = commands.add_parser("sources", help="List registered Hugging Face, Kaggle, and local sources without loading data")
+    sources.add_argument("--source-registry", type=Path, default=DEFAULT_SOURCE_REGISTRY)
+    run = commands.add_parser("run", help="Embed the whole selected source and cluster every non-empty record", allow_abbrev=False)
     run.add_argument("--settings", type=Path, help="Central embedding YAML/JSON config; CLI flags override its values")
     run.add_argument("--source-settings", type=Path, help="Reuse dataset/text selection from inspection YAML/JSON")
+    run.add_argument("--source-registry", type=Path, help="Dataset source registry YAML")
+    run.add_argument("--source-id", help="Stable ID from the source registry; replaces the complete source/schema selection")
     source = run.add_mutually_exclusive_group()
     source.add_argument("--local", type=Path)
     source.add_argument("--dataset")
-    run.add_argument("--provider", choices=("huggingface", "kaggle"), help="Required for remote datasets, here or in the settings file")
+    run.add_argument("--provider", choices=("huggingface", "kaggle", "local"), help="Required for remote datasets, here or in the settings file")
     run.add_argument("--dataset-file")
     run.add_argument("--config")
     run.add_argument("--split")
@@ -111,8 +116,11 @@ def parse_arguments(arguments=None):
     raw = list(sys.argv[1:] if arguments is None else arguments)
     preliminary = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     preliminary.add_argument("--settings", type=Path)
+    preliminary.add_argument("--source-id")
+    preliminary.add_argument("--source-registry", type=Path)
     selected, _ = preliminary.parse_known_args(raw)
     defaults = load_embedding_settings(selected.settings) if selected.settings else {}
+    defaults = registered_defaults(defaults, raw, source_id=selected.source_id, registry=selected.source_registry)
     args = parser(apply_cli_overrides(defaults, raw)).parse_args(raw)
     if args.command == "run" and isinstance(args.field_mapping, list):
         mapping = {}
@@ -142,6 +150,8 @@ def main(arguments=None):
         args = parse_arguments(arguments)
         if args.command == "models":
             result = MODEL_PRESETS
+        elif args.command == "sources":
+            result = list(load_source_registry(args.source_registry).values())
         elif args.command == "recluster":
             from attention_maps.explorer.semantic_variants import recluster_run
             output, report = recluster_run(args)

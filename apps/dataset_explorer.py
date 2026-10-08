@@ -25,7 +25,7 @@ from apps.components.file_formats import render_file_formats
 from apps.components.semantic_results import render_semantic_results
 from apps.components.inspection_reports import render_language_status, render_script_results
 from attention_maps.explorer.file_formats import describe_dataset_formats
-from attention_maps.explorer.sample_filters import sample_filtered_rows
+from attention_maps.explorer.sample_filters import discover_filter_values, sample_filtered_rows
 from attention_maps.explorer.huggingface import (
     discover_huggingface_dataset, inspect_huggingface_configuration, inspect_huggingface_selection,
 )
@@ -321,6 +321,10 @@ def run_app() -> None:
     @st.cache_data(show_spinner=False)
     def cached_filtered_sample(inventory, sample_size, seed, columns, row_filters, max_scan_rows):
         return sample_filtered_rows(inventory, sample_size, seed, columns, row_filters, max_scan_rows)
+
+    @st.cache_data(show_spinner=False)
+    def cached_filter_values(inventory, columns, max_scan_rows):
+        return discover_filter_values(inventory, columns, max_scan_rows)
 
     st.sidebar.header("Dataset source")
     source_type = st.sidebar.selectbox(
@@ -701,6 +705,7 @@ def run_app() -> None:
             spec=spec,
             cached_sample=cached_sample,
             cached_filtered_sample=cached_filtered_sample,
+            cached_filter_values=cached_filter_values,
         )
 
     with inference_tab:

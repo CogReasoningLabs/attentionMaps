@@ -13,7 +13,7 @@ def render_details_tab(*, st: Any, inventory: dict[str, Any], spec: Any) -> None
         st.code(displayed_files or str(spec.location), language=None)
 
 def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
-                      cached_sample: Any, cached_filtered_sample: Any) -> int:
+                      cached_sample: Any, cached_filtered_sample: Any, cached_filter_values: Any) -> int:
     controls = st.columns([1, 1, 3])
     sample_size = controls[0].number_input(
         "Records", min_value=1, max_value=20, value=5, step=1
@@ -37,26 +37,54 @@ def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
             help="Choose metadata columns, such as language. Plain text files have no metadata columns.",
         )
         st.caption(
-            "Exact text matches, including case. Enter one allowed value per line. "
+            "Select the values stored in your dataset; matching includes case. "
             "A row must match every selected column and any allowed value within each column. "
             "These filters apply to Source sample only."
         )
+        max_scan_rows = st.number_input(
+            "Maximum rows to scan", min_value=1, max_value=10_000_000, value=100_000, step=1_000,
+            key=f"sample-filter-limit:{spec.key}", disabled=not filter_columns,
+            help="Available values and filtered samples use this prefix of the selected source. "
+                 "Increase the limit to find values farther into the dataset.",
+        )
+        discovered = {"counts": {}}
+        if filter_columns:
+            try:
+                with st.spinner("Finding available filter values…"):
+                    discovered = cached_filter_values(inventory, tuple(filter_columns), int(max_scan_rows))
+                st.caption(f"Available values observed in {discovered['rows_scanned']:,} source rows. "
+                           "Counts are per column, before applying these preview filters.")
+                if discovered["scan_limit_reached"]:
+                    st.caption("More values may exist beyond the scan limit. Increase Maximum rows to scan to look farther.")
+                if discovered["truncated_columns"]:
+                    st.caption("Showing the first 200 distinct values for: "
+                               + ", ".join(discovered["truncated_columns"]) + ". Other values can be entered below.")
+            except (OSError, ValueError, ImportError) as error:
+                st.warning(f"Could not list available values: {error}. You can enter exact values below.")
         for column in filter_columns:
+            counts = discovered["counts"].get(column, {})
+            value_key = f"sample-filter-options:{spec.key}:{column}"
+            # Keep selections active if a smaller scan no longer observes them.
+            options = list(dict.fromkeys([*counts, *st.session_state.get(value_key, [])]))
+            selected_values = st.multiselect(
+                f"Available values for {column}", options, key=value_key,
+                format_func=lambda value, counts=counts: (
+                    f"{value} · {counts[value]:,} rows" if value in counts else f"{value} · not observed in this scan"
+                ),
+                help="Choose one or more values. Counts refer to scanned rows, not the full dataset.",
+            )
+            if not counts:
+                st.caption(f"No selectable text values found for {column} in this scan.")
             raw_values = st.text_area(
                 f"Allowed values for {column}", key=f"sample-filter-values:{spec.key}:{column}",
-                placeholder="Nepali", help="Use the values stored in the dataset, for example Nepali or ne.",
+                placeholder="Optional: values not listed above, one per line", height=68,
+                help="Additional exact values to allow alongside your dropdown selections. Leave blank to use only selected values.",
             )
-            values = list(dict.fromkeys(value.strip() for value in raw_values.splitlines() if value.strip()))
+            values = list(dict.fromkeys([*selected_values, *(value for value in raw_values.splitlines() if value.strip())]))
             if values:
                 row_filters[column] = values
             else:
                 missing_values.append(column)
-        max_scan_rows = st.number_input(
-            "Maximum rows to scan", min_value=1, max_value=10_000_000, value=100_000, step=1_000,
-            key=f"sample-filter-limit:{spec.key}", disabled=not filter_columns,
-            help="The filtered sample is drawn from matching rows in this prefix of the selected source. "
-                 "Increase the limit to search farther into the dataset.",
-        )
     preview_limit = st.slider(
         "Table preview characters per field", 100, 2_000, 400, 100
     )
@@ -69,7 +97,7 @@ def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
     effective_seed = int(base_seed) + st.session_state[refresh_key]
     
     if missing_values:
-        st.info(f"Enter at least one allowed value for: {', '.join(missing_values)}.")
+        st.info(f"Select or enter at least one allowed value for: {', '.join(missing_values)}.")
     elif not selected_columns:
         st.info("Select at least one column.")
     else:

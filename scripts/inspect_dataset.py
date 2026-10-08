@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("--dataset", help="Hugging Face ID or Kaggle owner/dataset[/versions/N]")
     source.add_argument("--local", type=Path, help="Local supported file or Parquet directory")
     parser.add_argument("--revision", help="Commit, tag, or branch; resolved to a commit")
-    parser.add_argument("--config", help="Hugging Face dataset configuration")
+    parser.add_argument("--config", help="Hugging Face configuration; '*' inspects the chosen split in every available configuration")
     parser.add_argument("--split", help="Dataset split")
     parser.add_argument("--shard", dest="shards", action="append", help="Shard name/path from --list; repeat to combine")
     parser.add_argument("--list", action="store_true", help="List Hub configurations/splits/shards or Kaggle files without downloading data")
@@ -204,6 +204,9 @@ def main(arguments: list[str] | None = None) -> int:
         elif settings["dataset"]:
             catalog = discover_huggingface_dataset(settings["dataset"], revision=settings["revision"], token=token)
             settings["revision"] = catalog.get("revision")
+            if settings["config"] == "*":
+                from attention_maps.explorer.inspection_batch import inspect_all_configurations
+                return inspect_all_configurations(catalog, settings, token=token, listing=args.list)
             if args.list and not settings["config"]:
                 report = {key: value for key, value in catalog.items() if key != "file_sizes"}
             else:

@@ -2,36 +2,33 @@
 # Paths are relative to this file; CLI flags override YAML.
 
 # Source
-provider: huggingface                      # huggingface | kaggle | local
-dataset: FredZhang7/toxi-text-3M
-
+provider: local                      # huggingface | kaggle | local
+dataset: null
 # Hugging Face only
 revision: null
-config: default
-split: train
+config: null                     # Every available subset, saved as a separate inspection run.
+split: null                  # Nepali; subsets without this split are reported and skipped.
 shards: null
 
 # Kaggle only
 dataset_file: null
 
 # Local source
-local: null
+local: ../../artifacts/datasets/multiparacrawl-v7.1/ne.txt
 
 # Atomic dataset instance; set for each dataset before inspection.
-training_schema: task_specific_supervised
+training_schema: pretraining
 invalid_instance_policy: error
 text_record_unit: line          # TXT only: line | blank_line
 field_mapping:
   text: text
-  label: is_toxic
 field_parsers: {}
-task_name: toxicity_classification
+task_name: null
 
-row_filters:
-  lang: [ne]
+row_filters: {}
 
 # Shared selection — applied before sampling
-text_columns: [text]
+text_columns: [text]               # Analyze the full ordered conversation using the schema.
 formats_only: false              # Metadata only; requires empty row_filters.
 
 # Sampling within the selected portion

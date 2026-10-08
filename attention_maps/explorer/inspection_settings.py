@@ -133,6 +133,13 @@ def validate_inspection_settings(settings: dict, *, listing: bool = False) -> No
         raise ValueError("provider local requires a local source")
     if settings.get("dataset_file") and settings.get("provider") != "kaggle":
         raise ValueError("dataset_file applies only to Kaggle datasets")
+    if settings.get("config") == "*":
+        if not settings.get("split") or settings["split"] == "*":
+            raise ValueError("config: '*' requires one explicit split, such as npi_Deva")
+        if settings.get("shards"):
+            raise ValueError("config: '*' selects all shards per subset; set shards to null")
+        if settings.get("min_devanagari_ratio") is not None or settings.get("filtered_output"):
+            raise ValueError("config: '*' does not support a shared filtered output; export each subset separately")
     if listing:
         if not settings.get("dataset"):
             raise ValueError("--list requires a Hugging Face or Kaggle dataset")

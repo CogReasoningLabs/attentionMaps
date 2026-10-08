@@ -6,6 +6,96 @@ artifacts, selects saved datasets/models, compares any two stored records, and
 shows an interactive 3D projection. Opening the UI never downloads a model or
 reruns clustering.
 
+## Reusable datasets from three providers
+
+Maintain datasets in [`configs/datasets/sources.yaml`](../../configs/datasets/sources.yaml).
+Its `sources` mapping has three groups: `huggingface`, `kaggle`, and `local`.
+Every entry has a unique, stable ID and its own complete source/schema selection:
+
+```yaml
+version: 1
+sources:
+  huggingface:
+    news-ne:
+      label: Nepali news
+      dataset: owner/news
+      config: ne
+      split: train
+      training_schema: pretraining
+      field_mapping: {text: text}
+      text_columns: [text]
+  kaggle:
+    comments-ne:
+      dataset: owner/comments/versions/1
+      dataset_file: comments.csv
+      training_schema: task_specific_supervised
+      field_mapping: {text: comment, label: category}
+      task_name: classification
+  local:
+    multiparacrawl-ne-v7-1:
+      local: ../../artifacts/datasets/multiparacrawl-v7.1/ne.txt
+      training_schema: pretraining
+      text_record_unit: line
+      field_mapping: {text: text}
+      text_columns: [text]
+```
+
+The remote IDs above are structural examples. The checked-in registry defines
+the datasets from the earlier discussion and saved research history, including
+both NLLB directions, all 17 Nepali Updesh subsets, the Kaggle files, and local
+corpora. See the [source catalog](../dataset-source-registry.md) for every ID,
+field mapping, and known preparation requirement, including OSCAR mini's pending
+download. The demonstration corpus remains a separate entry.
+Local paths are relative to the registry file. Hugging Face entries may include
+`revision`, `config`, `split`, and `shards`. Kaggle entries require `dataset_file`;
+different files in the same account/dataset get different source IDs. Optional
+`row_filters`, field parsers, task names, and instance boundaries belong to each
+entry. Register a separate ID for each exact subset; wildcard batch inspection
+does not imply combined embedding runs.
+
+List sources without network access or model loading:
+
+```bash
+venv/bin/python scripts/cluster_dataset.py sources
+```
+
+Select a registered source while retaining shared model and clustering settings:
+
+```bash
+venv/bin/python scripts/cluster_dataset.py run \
+  --settings configs/embeddings.yaml \
+  --source-id multiparacrawl-ne-v7-1 \
+  --model nepali-bert \
+  --output-dir artifacts/dataset_embeddings/multiparacrawl-ne-bert-run01
+```
+
+Alternatively, set `source_id` in `configs/embeddings.yaml`. `source_registry`
+selects the registry file (relative to the embedding settings file), and
+`--source-registry` overrides it relative to the working directory. With no source
+ID, the existing inline source or `--source-settings` behavior is retained.
+A selected ID replaces **all** inline source/schema fields, including stale
+filters and language declarations. Do not combine it with direct source/schema
+CLI flags; create a separate entry for another selection. Model, seed, prefix
+limit, batch sizes, cluster settings, and output directory remain independently
+configurable. Full option names are required for `run`.
+
+Streamlit's **Embedding results** view now starts with **Source type** and
+**Dataset**, including registered sources with no completed runs. Expand
+**Generate embeddings for this dataset** to choose a model and unused run name;
+the UI shows the exact command and configured processing scope. Run that command
+from the project root, then click **Refresh saved runs** to visualize the result.
+Edit the registry YAML to add more entries. Selecting a source does not download
+it or run an embedding model.
+
+New reports save the source ID, registry definition, and its signature alongside
+the resolved source provenance. The registration does not change embedding text,
+corpus fingerprints, or numerical processing. Existing reports and vectors are
+not rewritten. Older runs remain selectable as saved datasets within their
+provider, even if the original source file or registry is unavailable. Changing
+a registry definition keeps its previous runs in that saved-dataset list;
+they are not silently assigned to the new definition. Changing just a display
+label does not change the definition signature.
+
 ## Reuse embeddings for different cluster counts and word clouds
 
 Each script invocation computes **one requested cluster count**. For an existing
@@ -119,11 +209,12 @@ belonging to the other provider. Local paths identify their source automatically
 | --- | --- |
 | Kaggle | `provider: kaggle`, `dataset: owner/dataset`, `dataset_file: file.txt`; Hugging Face fields must be null. |
 | Hugging Face | `provider: huggingface`, `dataset: owner/dataset`, `config`, `split`, `revision`, `shards`; `dataset_file` must be null. |
+| Local | `provider: local`, `local: path/to/data`; `dataset` and remote selection fields must be null. |
 
 Change `model` to `nepali-bert`, `nepberta`, or `embeddinggemma`. Leave `model_id`
 and `max_length` null to use the chosen preset's checkpoint and supported chunk
 limit. Original NepBERTa still requires the separate runtime described below.
-Set `output_dir` to a new directory for each experiment. The provided config selects the Kaggle Nepali corpus; its `max_records` value
+Set `output_dir` to a new directory for each experiment. The config's `max_records` value
 controls the current trial size, and `clusters` controls the requested groups.
 
 CLI arguments override the central file, including replacing list fields:

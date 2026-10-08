@@ -8,7 +8,7 @@ from .semantic_source import SOURCE_KEYS
 from .field_parsers import validate_field_parsers
 
 RUN_KEYS = set(SOURCE_KEYS) | {
-    "source_settings", "model", "model_id", "model_revision", "embedding_task",
+    "source_settings", "source_registry", "source_id", "model", "model_id", "model_revision", "embedding_task",
     "device", "batch_size", "max_length", "max_records", "clusters",
     "cluster_batch_size", "cluster_epochs", "seed", "output_dir",
     "training_schema", "field_mapping", "field_parsers", "task_name", "text_record_unit", "wordcloud_font",
@@ -23,12 +23,19 @@ def load_embedding_settings(path):
         settings = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as error:
         raise ValueError(f"Invalid embedding settings YAML: {error}") from error
+    return validate_embedding_settings(settings, path)
+
+
+def validate_embedding_settings(settings, path):
+    """Validate and resolve paths without requiring a separate settings file."""
+    path = Path(path).expanduser().resolve()
     if not isinstance(settings, dict):
         raise ValueError("Embedding settings must be a YAML/JSON mapping")
+    settings = dict(settings)
     unknown = set(settings) - RUN_KEYS
     if unknown:
         raise ValueError(f"Unknown embedding settings: {sorted(map(str, unknown))}")
-    choices = {"training_schema": ("auto", *SCHEMAS), "text_record_unit": ("line", "blank_line"), "model": tuple(MODEL_PRESETS), "provider": ("huggingface", "kaggle"),
+    choices = {"training_schema": ("auto", *SCHEMAS), "text_record_unit": ("line", "blank_line"), "model": tuple(MODEL_PRESETS), "provider": ("huggingface", "kaggle", "local"),
                "embedding_task": ("clustering", "similarity"), "device": ("auto", "cpu", "cuda")}
     for key, allowed in choices.items():
         if key in settings and not (key == "provider" and settings[key] is None) and settings[key] not in allowed:
@@ -43,12 +50,12 @@ def load_embedding_settings(path):
         value = settings.get(key)
         if value is not None and (not isinstance(value, list) or not value or any(not isinstance(x, str) or not x.strip() for x in value)):
             raise ValueError(f"{key} must be a non-empty list of strings or null")
-    for key in ("dataset", "dataset_file", "revision", "config", "split", "model_id", "model_revision", "task_name"):
+    for key in ("dataset", "dataset_file", "revision", "config", "split", "model_id", "model_revision", "task_name", "source_id"):
         if key in settings:
             value = settings[key]
             if (value is not None or key == "model_revision") and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"{key} must be a non-empty string")
-    for key in ("source_settings", "local", "output_dir", "wordcloud_font"):
+    for key in ("source_settings", "source_registry", "local", "output_dir", "wordcloud_font"):
         value = settings.get(key)
         if value is not None:
             if not isinstance(value, str) or not value.strip():
@@ -107,4 +114,6 @@ def effective_run_settings(args, source):
     settings = {key: getattr(args, key, None) for key in RUN_KEYS}
     settings.update(source)
     settings["settings_file"] = getattr(args, "settings", None)
+    if getattr(args, "source_registration", None):
+        settings["source_registration"] = args.source_registration
     return {key: str(value) if isinstance(value, Path) else value for key, value in settings.items()}

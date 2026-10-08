@@ -100,14 +100,54 @@ and rate until counting finishes. The bars use stderr, so stdout remains valid
 JSON and Streamlit still reads only the completed CSV. Piped/noninteractive runs
 keep concise periodic status messages instead of terminal control characters.
 
-The current selection is `CohereLabs/aya_dataset` on Hugging Face. Use the same
-file for all providers:
+Use the same settings file for all providers:
 
 | Source | Settings to edit |
 | --- | --- |
 | Hugging Face | `provider: huggingface`, `dataset`, `revision`, `config`, `split`, optional `shards`; keep `dataset_file` and `local` null. |
 | Kaggle | `provider: kaggle`, `dataset: owner/dataset`, `dataset_file`; set `revision`, `config`, `split`, `shards`, and `local` to null. |
 | Local | Set `local` to a file/Parquet directory; set `dataset`, `dataset_file`, `revision`, `config`, `split`, and `shards` to null. |
+
+To inspect the same split across every available Hugging Face subset, quote the
+wildcard as `config: "*"` and provide an exact `split`. For Updesh's Nepali data:
+
+```yaml
+provider: huggingface
+dataset: microsoft/Updesh_beta
+config: "*"
+split: npi_Deva
+shards: null
+dataset_file: null
+local: null
+training_schema: instruction_finetuning
+field_mapping: {messages: messages}
+field_parsers: {}
+task_name: null
+text_columns: null
+row_filters: {}
+```
+
+The inspector discovers subsets at one pinned revision and runs the existing
+analysis independently on each subset that contains the requested split.
+Each completed subset appends its own history row, with its actual configuration
+name and shared batch provenance; percentages and votes are not averaged across
+subsets. Missing splits are listed as skipped. A subset that fails validation
+or processing is reported as failed, other selected subsets are still attempted,
+and the command exits nonzero. Existing results remain intact. Standard output
+contains a batch summary and the complete successful reports. No failed subset
+is represented as a successful inspection. Failure names and reasons are repeated
+after the final summary so they remain visible below the full JSON output.
+
+Add `--list` to the normal settings command to preview the selected and skipped
+subsets without inspecting records or writing history. Wildcard selection
+requires `shards: null` and cannot share a filtered export file; choose a single
+configuration for a Devanagari export. An ordinary configuration name retains
+the previous single-subset behavior.
+
+For conversation schemas, analysis includes every message's content, including
+English system prompts. A Nepali split supplies language-partition evidence;
+it does not prove that all conversation text is Nepali. The configured invalid
+instance policy still applies, including to empty message content.
 
 `MBZUAI/Bactrian-X` uses a legacy Hugging Face builder script that current
 `datasets` versions reject. The inspector reads the selected pinned
