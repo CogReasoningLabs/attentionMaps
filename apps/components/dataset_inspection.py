@@ -12,7 +12,10 @@ from attention_maps.explorer.text import format_decimal_bytes
 def render_huggingface_source(
     st: Any, *, catalog_loader: Any, configuration_loader: Any,
 ) -> tuple[Any, dict | None]:
-    st.sidebar.caption("Discover configurations and splits, then choose all or specific shards.")
+    st.sidebar.caption(
+        "Choose a subset/configuration, then a split. Languages may be separate subsets "
+        "or splits, so a language column is not required."
+    )
     dataset_id = st.sidebar.text_input(
         "Hugging Face dataset ID", placeholder="owner/dataset", key="source-hf-id"
     ).strip()
@@ -21,6 +24,7 @@ def render_huggingface_source(
         "facebook/flores": "Evaluation benchmark: use 'npi_Deva' or 'eng_Latn-npi_Deva', split 'dev' or 'devtest'. Accept access conditions on Hugging Face and set HF_TOKEN for that account.",
         "google/IndicGenBench_flores_in": "Evaluation benchmark: use 'ne', split 'validation' or 'test'. Both translation directions are cached together. Keep benchmark examples out of pretraining.",
         "Nandan007/NepFakeV2": "Use 'default', split 'train'. Only the records CSV is cached; statistics and duplicate JSON exports are excluded.",
+        "ai4bharat/sangraha": "For Nepali, choose subset 'verified' or 'unverified', then split 'nep'. In 'synthetic', choose 'npi_Deva' or 'npi_Latn'. Leave language row filters empty.",
     }
     if dataset_id in guidance:
         st.sidebar.caption(guidance[dataset_id])
@@ -56,7 +60,8 @@ def render_huggingface_selection(
         return None, None
     preferred = spec.dataset_config if spec.dataset_config in configs else configs[0]
     config = st.sidebar.selectbox(
-        "Dataset configuration", configs, index=configs.index(preferred), key=f"{prefix}:config"
+        "Dataset subset / configuration", configs, index=configs.index(preferred), key=f"{prefix}:config",
+        help="Matches Hugging Face's Subset selector. A subset can represent a language, language pair, or collection.",
     )
     try:
         configuration = configuration_loader(catalog, config)
@@ -64,9 +69,18 @@ def render_huggingface_selection(
         st.sidebar.error(str(error))
         return None, None
     splits = list(configuration["splits"])
+    if not splits:
+        st.sidebar.error("This subset exposes no selectable splits. Choose another subset.")
+        return None, None
     preferred_split = spec.dataset_split if spec.dataset_split in splits else splits[0]
     split = st.sidebar.selectbox(
-        "Dataset split", splits, index=splits.index(preferred_split), key=f"{prefix}:{config}:split"
+        "Dataset split / language", splits, index=splits.index(preferred_split), key=f"{prefix}:{config}:split",
+        help="Matches Hugging Face's Split selector. Some datasets use language codes such as nep or npi_Deva instead of train/test. Only this split feeds the workspace.",
+    )
+    st.sidebar.caption(
+        f"Selected subset: {config} · split: {split}. "
+        "Source sample, WORKSPACE and EDA use only this selection. "
+        "For a language split, no language-column filter is needed."
     )
     shard_key = f"{prefix}:{config}:{split}"
     available = configuration["splits"][split]["shards"]

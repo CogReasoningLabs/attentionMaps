@@ -18,7 +18,7 @@ from attention_maps.common.google_drive import (
     upload_path_to_google_drive,
 )
 from attention_maps.common.pipeline_logging import pipeline_logger
-from attention_maps.datasets.schemas import DATASET_ROLES, infer_training_schema
+from attention_maps.datasets.schemas import DATASET_ROLES, resolve_dataset_role
 from attention_maps.eda.contracts import AnalysisConfig, SurveyPlan, SurveyRun
 from attention_maps.eda.deduplication import DeduplicationConfig
 from attention_maps.eda.pipeline import analyze_records
@@ -60,6 +60,13 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
         "Run Steps 1–3, then continue to Step 5 for EDA. Step 4 (D2 pruning) is optional. "
         "The workspace creates a sampled, NFC-normalized, deduplicated copy of the source."
     )
+    if spec.format == "huggingface":
+        st.info(
+            f"Workspace source: subset **{spec.dataset_config}** → split **{spec.dataset_split}** "
+            "(selected shards only). Change the subset or split in the sidebar. "
+            "If this is a language partition, leave language row filters empty; "
+            "sampling, deduplication, EDA and export will use that partition."
+        )
     roles = {role.key: role for role in DATASET_ROLES}
     inferred = next((tag for tag in spec.tags if tag in roles and roles[tag].d2_use_case), None)
     if inferred is None:
@@ -67,8 +74,7 @@ def render_workspace_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
     if inferred is None:
         inferred = next((role.key for role in DATASET_ROLES if role.label == spec.primary_purpose), None)
     if inferred is None:
-        inferred = ("evaluation" if spec.primary_purpose == "Evaluation / benchmark"
-                    else infer_training_schema(spec.primary_purpose))
+        inferred = resolve_dataset_role(spec.primary_purpose)
     role_keys = [None, *roles]
     selected_role = st.selectbox(
         "Dataset role",

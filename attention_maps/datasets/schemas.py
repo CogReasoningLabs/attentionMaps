@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 
 PRETRAINING_SCHEMA = "pretraining"
@@ -82,27 +83,51 @@ _SUPERVISED_ROLES = (
         "traditional_nlp",
     ),
     DatasetRole(
-        "domain_specific_supervised", "Domain-specific supervised", TASK_SPECIFIC_SUPERVISED_SCHEMA,
+        "domain_specific_supervised", "Domain-specific fine-tuning", TASK_SPECIFIC_SUPERVISED_SCHEMA,
         "Labelled examples for supervised fine-tuning in a specific domain, such as medicine, law, or finance.",
         "domain_specific_finetuning",
     ),
 )
+_ROLE_LABELS = {
+    PRETRAINING_SCHEMA: "Pretraining",
+    INSTRUCTION_FINETUNING_SCHEMA: "Instruction SFT",
+    TASK_SPECIFIC_SUPERVISED_SCHEMA: "Task-specific fine-tuning",
+    PREFERENCE_TUNING_SCHEMA: "Preference tuning",
+    EVALUATION_SCHEMA: "Evaluation",
+}
 DATASET_ROLES = tuple(
     role
     for schema in STANDARD_DATASET_SCHEMAS
     for role in (
-        DatasetRole(schema.key, schema.label, schema.key, schema.description),
+        DatasetRole(schema.key, _ROLE_LABELS[schema.key], schema.key, schema.description),
         *(_SUPERVISED_ROLES if schema.key == TASK_SPECIFIC_SUPERVISED_SCHEMA else ()),
     )
 )
 
 
-def infer_training_schema(primary_purpose: str) -> str | None:
-    """Map the curated catalog purpose to one of the four standard schemas."""
+def resolve_dataset_role(value: str) -> str | None:
+    """Accept existing tracker/catalog spelling while storing one role vocabulary."""
+    normalize = lambda text: re.sub(r"[^a-z0-9]", "", text.casefold())
+    aliases = {
+        "Pre-training": PRETRAINING_SCHEMA,
+        "Domain-specific supervised": "domain_specific_supervised",
+        "Domain-specific finetuning": "domain_specific_supervised",
+        "Task-specific finetuning": TASK_SPECIFIC_SUPERVISED_SCHEMA,
+        "Evaluation / benchmark": EVALUATION_SCHEMA,
+        **{schema.label: schema.key for schema in STANDARD_DATASET_SCHEMAS},
+        **{role.label: role.key for role in DATASET_ROLES},
+        **{role.key: role.key for role in DATASET_ROLES},
+    }
+    return {normalize(label): key for label, key in aliases.items()}.get(normalize(value))
 
-    return {
-        "Pretraining corpus": PRETRAINING_SCHEMA,
-        "Instruction fine-tuning": INSTRUCTION_FINETUNING_SCHEMA,
-        "Task-specific fine-tuning": TASK_SPECIFIC_SUPERVISED_SCHEMA,
-        "Preference tuning": PREFERENCE_TUNING_SCHEMA,
-    }.get(primary_purpose)
+
+def parse_dataset_roles(value: str) -> tuple[str, ...]:
+    """Keep unrecognized labels visible for manual review instead of dropping them."""
+    return tuple(dict.fromkeys(resolve_dataset_role(item.strip()) or item.strip()
+                               for item in re.split(r"[,;|\n]+", value) if item.strip()))
+
+
+def infer_training_schema(primary_purpose: str) -> str | None:
+    """Map current and legacy dataset-role labels to the instance contract."""
+    key = resolve_dataset_role(primary_purpose)
+    return next((role.training_schema for role in DATASET_ROLES if role.key == key), None)

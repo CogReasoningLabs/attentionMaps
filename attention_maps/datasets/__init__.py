@@ -20,6 +20,8 @@ from .schemas import (
     TASK_SPECIFIC_SUPERVISED_SCHEMA,
     TrainingDataSchema,
     infer_training_schema,
+    parse_dataset_roles,
+    resolve_dataset_role,
 )
 
 __all__ = [
@@ -36,6 +38,8 @@ __all__ = [
     "TASK_SPECIFIC_SUPERVISED_SCHEMA",
     "TrainingDataSchema",
     "infer_training_schema",
+    "parse_dataset_roles",
+    "resolve_dataset_role",
     "inspect_kaggle_text",
     "inspect_kaggle_workbook",
     "sample_kaggle_text_rows",

@@ -819,7 +819,7 @@ not an inspection report.
 
 **Dataset explorer** remains available for interactive exploration. Select
 **Hugging Face**, enter its ID/revision, and click **Load Hugging Face source**,
-then choose **Dataset configuration**, **Dataset split**, and **Dataset shards**.
+then choose **Dataset subset / configuration**, **Dataset split / language**, and **Dataset shards**.
 Choose any combination, including only a later shard. Source samples, workspace
 sampling, overlap, and EDA use those same files. Workspace identities and
 manifests include the revision and selected shards.

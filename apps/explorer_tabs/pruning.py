@@ -39,7 +39,7 @@ def render_d2_pruning_step(
     )
     if selected_schema != TASK_SPECIFIC_SUPERVISED_SCHEMA:
         st.info(
-            "Optional D2 applies to Task-specific supervised, Traditional NLP, and Domain-specific supervised roles. "
+            "Optional D2 applies to Task-specific fine-tuning, Traditional NLP, and Domain-specific fine-tuning roles. "
             "Continue to Step 5 for EDA with this role."
         )
         return

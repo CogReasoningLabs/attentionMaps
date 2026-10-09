@@ -127,7 +127,7 @@ KaggleHub uses its managed cache. Cached source material is excluded from Git.
 3. Enter the provider's standard identifier and select **Load ... source**.
    No dataset role or training schema is required to load it. New sources remain
    unclassified; known FLORES benchmarks retain their evaluation purpose.
-4. For Hugging Face, choose **Dataset configuration**, **Dataset split**, and
+4. For Hugging Face, choose **Dataset subset / configuration**, **Dataset split / language**, and
    **All shards** or **Choose shards**. Sizes and samples follow this selection.
    For a staged folder or multi-file Kaggle dataset, select the dataset file.
 5. Explore **Source sample** and **Metadata** to understand the actual fields,

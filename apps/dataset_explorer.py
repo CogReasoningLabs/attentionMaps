@@ -22,6 +22,7 @@ from apps.components.dataset_inspection import (
     render_huggingface_source, render_huggingface_selection,
 )
 from apps.components.file_formats import render_file_formats
+from apps.components.dataset_tracker import render_dataset_tracker, sync_saved_tracker_role
 from apps.components.semantic_results import render_semantic_results
 from apps.components.inspection_reports import render_language_status, render_script_results
 from attention_maps.explorer.file_formats import describe_dataset_formats
@@ -709,7 +710,17 @@ def run_app() -> None:
             cached_filter_values=cached_filter_values,
         )
 
+    with metadata_tab:
+        render_details_tab(st=st, inventory=inventory, spec=spec)
+        tracker_context = render_dataset_tracker(st, spec)
+        sync_saved_tracker_role(st, spec, tracker_context)
+        st.divider()
+        render_manifest_tab(st=st, spec=spec, data_root=data_root)
+
     with workspace_tab:
+        if tracker_context is not None:
+            st.caption("Saved tracker roles: " + (tracker_context["role_value"] or "Not classified yet")
+                       + ". Choose one processing role below; edit and save tracker annotations in Metadata.")
         render_workspace_tab(st=st, inventory=inventory, spec=spec, cached_filter_values=cached_filter_values)
 
     with overlap_tab:
@@ -728,12 +739,6 @@ def run_app() -> None:
             spec=spec,
             cached_sample=cached_sample,
         )
-
-    with metadata_tab:
-        render_details_tab(st=st, inventory=inventory, spec=spec)
-        st.divider()
-        render_manifest_tab(st=st, spec=spec, data_root=data_root)
-
 
 if __name__ == "__main__":
     run_app()
