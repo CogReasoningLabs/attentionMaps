@@ -15,6 +15,7 @@ from urllib.parse import unquote, urlparse
 from .catalog import DatasetSpec
 from .file_formats import describe_dataset_formats
 from .source_imports import normalize_huggingface_id
+from .parallel_reads import ordered_parallel_reads
 from .huggingface_adapters import (
     ADAPTER_DATASETS, adapter_configuration, adapter_configurations, load_selected_adapter,
 )
@@ -162,6 +163,7 @@ def inspect_huggingface_configuration(
 def load_selected_huggingface_stream(
     dataset_id: str, config: str, split: str, revision: str, shards: Sequence[str],
     *, loader: str | None = None, token: str | None = None, filters=None,
+    parquet_features: dict | None = None,
 ):
     """Load pinned source files, bypassing obsolete repository builder scripts."""
     if loader == "source_adapter":
@@ -173,6 +175,12 @@ def load_selected_huggingface_stream(
     kwargs = {"split": split, "data_files": {split: list(shards)}, "streaming": True, "token": token}
     if filters is not None:
         kwargs["filters"] = filters
+    if parquet_features is not None:
+        from datasets import Features
+
+        # Physical schemas take precedence over a first-shard or dataset-card
+        # null type, which cannot accept strings present in other selected files.
+        kwargs["features"] = Features.from_dict(parquet_features)
     if loader == "json":
         return load_dataset("json", **kwargs)
     return load_dataset(dataset_id, config, revision=revision, **kwargs)
@@ -235,6 +243,8 @@ def _parquet_metadata(path: str, *, token: str | None) -> dict[str, Any]:
         metadata = parquet.metadata
         return {
             "rows": metadata.num_rows,
+            "arrow_schema": parquet.schema_arrow,
+            "row_groups": [metadata.row_group(i).num_rows for i in range(metadata.num_row_groups)],
             "memory_bytes": sum(metadata.row_group(i).total_byte_size for i in range(metadata.num_row_groups)),
             "schema": [
                 {"column": field.name, "type": str(field.type), "nullable": str(field.nullable)}
@@ -271,6 +281,7 @@ def inspect_huggingface_selection(
     shards: Sequence[str] | None = None, token: str | None = None,
     filter_column: str | None = None, filter_value: str | None = None,
     metadata_only: bool = False,
+    read_workers: int = 1,
 ) -> dict[str, Any]:
     """Return inventory for precisely the selected physical files."""
 
@@ -307,6 +318,8 @@ def inspect_huggingface_selection(
     schema = configuration["schema"]
     source = "split metadata"
     variants = 1
+    row_groups = []
+    parquet_features = None
     parquet_only = all(PurePosixPath(urlparse(item["path"]).path).suffix.lower() == ".parquet" for item in selected)
     if not metadata_only and whole_split and rows is None and not parquet_only:
         viewer = _viewer_split_metadata(configuration, split, token)
@@ -318,7 +331,9 @@ def inspect_huggingface_selection(
     # datasets. Exact random sampling needs the selected files' actual row count.
     if not metadata_only and (parquet_only or rows is None or not schema):
         if parquet_only:
-            metadata = [_parquet_metadata(item["path"], token=token) for item in selected]
+            metadata = ordered_parallel_reads(
+                lambda item: _parquet_metadata(item["path"], token=token), selected, read_workers,
+            )
             rows = sum(item["rows"] for item in metadata)
             memory = sum(item["memory_bytes"] for item in metadata)
             schemas = [item["schema"] for item in metadata]
@@ -326,6 +341,27 @@ def inspect_huggingface_selection(
             schema = [field for field in schemas[0] if field["column"] in common]
             variants = len({json.dumps(value, sort_keys=True) for value in schemas})
             source = "Parquet footers (selected shards)"
+            if all("arrow_schema" in item for item in metadata):
+                import pyarrow as pa
+                from datasets import Features
+
+                try:
+                    unified = pa.unify_schemas([item["arrow_schema"] for item in metadata])
+                except (pa.ArrowInvalid, pa.ArrowTypeError) as error:
+                    raise ValueError(f"Selected Parquet shards have incompatible column types: {error}") from error
+                # Nulls can adopt a concrete type; incompatible non-null types
+                # are reported instead of discarding records or stringifying them.
+                parquet_features = Features.from_arrow_schema(unified).to_dict()
+                schema = [{"column": field.name, "type": str(field.type), "nullable": str(field.nullable)}
+                          for field in unified if field.name in common]
+            if all("row_groups" in item for item in metadata):
+                start = 0
+                for shard, item in zip(selected, metadata):
+                    for index, count in enumerate(item["row_groups"]):
+                        if count:
+                            row_groups.append({"path": shard["path"], "row_group": index,
+                                               "start": start, "rows": count})
+                        start += count
         elif not schema:
             stream = load_selected_huggingface_stream(
                 configuration["dataset_id"], configuration["config"], split,
@@ -359,10 +395,12 @@ def inspect_huggingface_selection(
         "hub_file_size_basis": configuration.get("hub_file_size_basis", "original files"),
         "hub_file_size_scope": configuration.get("hub_file_size_scope", "selected split" if whole_split else "selected shards"),
         "memory_bytes_estimated": source.startswith("Parquet"),
-        "streaming": True, "row_groups": [], "schema": schema,
+        "streaming": True, "row_groups": row_groups, "schema": schema,
         "columns": [field["column"] for field in schema], "schema_variants": variants,
         "size_metadata_source": source, "declared_languages": configuration.get("languages", []),
     }
+    if parquet_features is not None:
+        inventory["parquet_features"] = parquet_features
     if bool(filter_column) != bool(filter_value):
         raise ValueError("A Hugging Face filter requires both a column and value")
     if filter_column and metadata_only:
@@ -373,6 +411,7 @@ def inspect_huggingface_selection(
             configuration["revision"], inventory["dataset_shards"],
             loader=configuration.get("dataset_loader"), token=token,
             filters=[(filter_column, "==", filter_value)],
+            parquet_features=parquet_features,
         )
         count = sum(record.get(filter_column) == filter_value for record in stream)
         inventory.update(

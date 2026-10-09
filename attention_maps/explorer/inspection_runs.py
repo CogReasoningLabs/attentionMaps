@@ -63,6 +63,7 @@ def _iter_source_records(inventory: dict, *, token: str | None = None,
             inventory["dataset_id"], inventory.get("dataset_config"),
             inventory["dataset_split"], inventory.get("dataset_revision"), shards,
             loader=inventory.get("dataset_loader"), token=token,
+            parquet_features=inventory.get("parquet_features"),
         )
         # IterableDataset.iter is the installed datasets library's native
         # batch iterator. Test doubles and older row-only iterables still work.

@@ -28,8 +28,13 @@ def render_inference_hub(
             "Translation evaluation",
             "Decoder benchmarks",
         ),
-        key="focused-inference-tool",
+        index=None,
+        placeholder="Choose an inference tool",
+        key=f"focused-inference-tool:{spec.key}",
     )
+    if mode is None:
+        st.info("Choose an inference tool to load its controls and sample records.")
+        return
 
     cached = _cached_services(st)
     if mode == "Model comparison":

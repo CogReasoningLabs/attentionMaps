@@ -123,12 +123,16 @@ def render_comparison_tab(
                 and reference_sentiment_column != inference_column
             ):
                 inference_sample_columns.append(reference_sentiment_column)
-            inference_records = cached_sample(
-                inventory,
-                1,
-                int(inference_sample_seed),
-                tuple(inference_sample_columns),
-            )
+            try:
+                inference_records = cached_sample(
+                    inventory,
+                    1,
+                    int(inference_sample_seed),
+                    tuple(inference_sample_columns),
+                )
+            except (OSError, ValueError, TypeError, ImportError) as error:
+                st.error(f"Could not read the inference instance: {error}")
+                inference_records = []
             if inference_records:
                 inference_record = inference_records[0]
                 extracted = extract_text(inference_record.get(inference_column))

@@ -25,6 +25,7 @@ from attention_maps.datasets.kaggle import (
 from .catalog import VIEWER_PREFIX
 from .file_formats import describe_dataset_formats
 from .inspection_progress import inspection_progress
+from .parallel_reads import ordered_parallel_reads
 
 
 HUGGINGFACE_DATASET_VIEWER_SIZE_URL = (
@@ -541,6 +542,7 @@ def sample_parquet_rows(
     sample_size: int,
     seed: int,
     columns: Sequence[str],
+    *, read_workers: int = 1, token: str | None = None,
 ) -> list[dict[str, Any]]:
     """Uniformly sample logical rows while reading only selected row groups."""
 
@@ -569,20 +571,68 @@ def sample_parquet_rows(
             (global_index, local_index)
         )
 
-    sampled_by_index: dict[int, dict[str, Any]] = {}
-    for (path_text, group_index), positions in requested.items():
-        parquet = pq.ParquetFile(path_text)
-        table = parquet.read_row_group(group_index, columns=selected_columns)
-        for global_index, local_index in positions:
-            record = table.slice(local_index, 1).to_pylist()[0]
-            record[f"{VIEWER_PREFIX}row_index"] = global_index
-            record[f"{VIEWER_PREFIX}file"] = str(
-                inventory.get("source_uri") or path_text
-            )
-            record[f"{VIEWER_PREFIX}row_group"] = group_index
-            sampled_by_index[global_index] = record
+    def read_group(item):
+        import fsspec
+
+        (path_text, group_index), positions = item
+        options = {"token": token} if path_text.startswith("hf://") else {}
+        if path_text.startswith("https://huggingface.co/") and token:
+            options = {"headers": {"Authorization": f"Bearer {token}"}}
+        filesystem, path = fsspec.core.url_to_fs(path_text, **options)
+        positions = sorted(positions, key=lambda position: position[1])
+        cursor = 0
+        found = {}
+        with filesystem.open(path, "rb", block_size=1024 * 1024) as stream:
+            # Avoid Arrow's background read-ahead buffers on top of each reader's
+            # file cache. A row-count batch limit is not a byte/RAM limit.
+            parquet = pq.ParquetFile(stream, pre_buffer=False)
+            offset = 0
+            # Each reader decodes small batches, without an additional Arrow thread pool.
+            for batch in parquet.iter_batches(batch_size=1024, row_groups=[group_index],
+                                               columns=selected_columns, use_threads=False):
+                end = cursor
+                while end < len(positions) and positions[end][1] < offset + batch.num_rows:
+                    end += 1
+                selected = positions[cursor:end]
+                records = batch.take([local - offset for _, local in selected]).to_pylist() if selected else []
+                for (global_index, local), record in zip(selected, records):
+                    record[f"{VIEWER_PREFIX}row_index"] = global_index
+                    record[f"{VIEWER_PREFIX}file"] = str(inventory.get("source_uri") or path_text)
+                    record[f"{VIEWER_PREFIX}row_group"] = group_index
+                    record[f"{VIEWER_PREFIX}identity_stable"] = True
+                    found[global_index] = record
+                cursor = end
+                if cursor == len(positions):
+                    break
+                offset += batch.num_rows
+        if cursor != len(positions):
+            raise ValueError("Parquet rows changed since inspection. Reload the source before sampling.")
+        return found
+
+    sampled_by_index = {}
+    for found in ordered_parallel_reads(read_group, list(requested.items()), read_workers):
+        sampled_by_index.update(found)
 
     return [sampled_by_index[index] for index in global_indices]
+
+
+def has_indexed_parquet_preview(inventory: dict[str, Any]) -> bool:
+    """Adapters and filtered streams must retain their original row semantics."""
+    return bool(
+        inventory.get("row_groups") and inventory.get("format") in {"parquet", "huggingface"}
+        and not inventory.get("dataset_loader") and not inventory.get("filter_column")
+        and not inventory.get("row_filters")
+    )
+
+
+def sample_instance_rows(inventory, sample_size, seed, columns, *, read_workers=1):
+    """Preview indexed Parquet instances directly; retain streaming for other sources."""
+    if has_indexed_parquet_preview(inventory):
+        return sample_parquet_rows(
+            inventory, sample_size, seed, columns, read_workers=read_workers,
+            token=os.getenv("HF_TOKEN") or os.getenv("HF_token"),
+        )
+    return sample_dataset_rows(inventory, sample_size, seed, columns)
 
 
 def sample_json_rows(
@@ -741,6 +791,7 @@ def _load_inventory_huggingface_stream(inventory, *, token=None, filters=()):
             inventory["dataset_split"], inventory.get("dataset_revision"), shards,
             loader=inventory.get("dataset_loader"), token=token,
             filters=list(filters) if filters else None,
+            parquet_features=inventory.get("parquet_features"),
         )
     return load_huggingface_stream(
         inventory["dataset_id"], inventory.get("dataset_config"),

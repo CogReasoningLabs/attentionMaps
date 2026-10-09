@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from attention_maps.explorer.inspection import has_indexed_parquet_preview
 
 from .selection import render_row_filter_controls
 
@@ -98,6 +99,8 @@ def render_sample_tab(*, st: Any, inventory: dict[str, Any], spec: Any,
             )
             if row_filters:
                 sampling_description = "Uniform sample of matching rows in the scanned portion"
+            elif has_indexed_parquet_preview(inventory):
+                sampling_description = "Uniform random sample from indexed Parquet row groups"
             st.caption(
                 f"{sampling_description} using effective seed {effective_seed}. "
                 "The table is shortened only for display; the full record below is not."

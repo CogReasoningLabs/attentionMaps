@@ -79,6 +79,8 @@ from apps.explorer_tabs import (
     render_sample_tab,
     render_workspace_tab,
 )
+from attention_maps.explorer.inspection import has_indexed_parquet_preview, sample_instance_rows
+from attention_maps.explorer.parallel_reads import MAX_READ_WORKERS
 
 
 def _render_remote_source(st: Any, source_type: str) -> DatasetSpec | None:
@@ -276,11 +278,13 @@ def run_app() -> None:
     @st.cache_data(show_spinner=False)
     def cached_huggingface_inventory(
         configuration, split, shards, filter_column, filter_value,
-        credential_fingerprint, _token,
+        credential_fingerprint, _token, read_workers=1,
     ):
+        """Resolve physical schemas across selected Parquet shards before streaming."""
         return inspect_huggingface_selection(
             configuration, split, shards=shards, token=_token or None,
             filter_column=filter_column, filter_value=filter_value,
+            read_workers=read_workers,
         )
 
     hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_token") or ""
@@ -318,6 +322,10 @@ def run_app() -> None:
         columns: tuple[str, ...],
     ) -> list[dict[str, Any]]:
         return sample_dataset_rows(inventory, sample_size, seed, columns)
+
+    @st.cache_data(show_spinner=False)
+    def cached_instance_sample(inventory, sample_size, seed, columns, read_workers, credential_fingerprint):
+        return sample_instance_rows(inventory, sample_size, seed, columns, read_workers=read_workers)
 
     @st.cache_data(show_spinner=False)
     def cached_filtered_sample(inventory, sample_size, seed, columns, row_filters, max_scan_rows):
@@ -525,6 +533,14 @@ def run_app() -> None:
         )
         st.stop()
 
+    read_workers = int(st.sidebar.number_input(
+        "Read workers", min_value=1, max_value=MAX_READ_WORKERS,
+        value=min(2, os.cpu_count() or 1), step=1, key="dataset-read-workers",
+        help="Parallel readers for Parquet instance previews and Hugging Face shard metadata. "
+             "Defaults to 2 to limit concurrent buffers. Maximum 16 workers; 1 reads sequentially. "
+             "Increase only if throughput improves without excessive RAM use. "
+             "Row-filter scans and other formats keep their streaming readers.",
+    ))
     try:
         with st.spinner("Reading dataset metadata…"):
             if spec.format == "huggingface":
@@ -537,6 +553,7 @@ def run_app() -> None:
                     spec.filter_value,
                     secret_fingerprint(hf_token),
                     hf_token,
+                    read_workers=read_workers,
                 )
             elif spec.format == "kaggle":
                 inventory = cached_kaggle_inventory(
@@ -611,6 +628,8 @@ def run_app() -> None:
         )
         if inventory.get("loading_strategy", "").startswith("memory_mapped_"):
             loading_message = "The selected source files are cached on disk. "
+        elif has_indexed_parquet_preview(inventory):
+            loading_message = f"Parquet instance previews read selected row groups with up to {read_workers} workers. "
         st.info(
             loading_message
             + "Sampling is bounded and the full dataset is not held in memory."
@@ -705,7 +724,9 @@ def run_app() -> None:
             st=st,
             inventory=inventory,
             spec=spec,
-            cached_sample=cached_sample,
+            cached_sample=lambda inventory, count, seed, columns: cached_instance_sample(
+                inventory, count, seed, columns, read_workers, credential_key,
+            ),
             cached_filtered_sample=cached_filtered_sample,
             cached_filter_values=cached_filter_values,
         )
@@ -737,7 +758,9 @@ def run_app() -> None:
             st=st,
             inventory=inventory,
             spec=spec,
-            cached_sample=cached_sample,
+            cached_sample=lambda inventory, count, seed, columns: cached_instance_sample(
+                inventory, count, seed, columns, read_workers, credential_key,
+            ),
         )
 
 if __name__ == "__main__":

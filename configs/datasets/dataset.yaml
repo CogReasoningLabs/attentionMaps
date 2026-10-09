@@ -2,26 +2,26 @@
 # Paths are relative to this file; CLI flags override YAML.
 
 # Source
-provider: local                      # huggingface | kaggle | local
-dataset: null
+provider: huggingface                      # huggingface | kaggle | local
+dataset: himalaya-ai/hermes-function-calling-nepali
 # Hugging Face only
 revision: null
-config: null                     # Every available subset, saved as a separate inspection run.
-split: null                  # Nepali; subsets without this split are reported and skipped.
+config: default                     # Every available subset, saved as a separate inspection run.
+split: ne_deva                  # Nepali; subsets without this split are reported and skipped.
 shards: null
 
 # Kaggle only
 dataset_file: null
 
 # Local source
-local: ../../artifacts/datasets/multiparacrawl-v7.1/ne.txt
+local: null
 
 # Atomic dataset instance; set for each dataset before inspection.
-training_schema: pretraining
+training_schema: instruction_finetuning
 invalid_instance_policy: error
 text_record_unit: line          # TXT only: line | blank_line
 field_mapping:
-  text: text
+  messages: conversations
 field_parsers: {}
 task_name: null
 
